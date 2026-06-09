@@ -16,6 +16,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.adbcommander.ui.theme.ADBCommanderTheme
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class ShareReceiverActivity : ComponentActivity() {
@@ -33,7 +34,28 @@ class ShareReceiverActivity : ComponentActivity() {
 
         setContent {
             ADBCommanderTheme {
-                ShareDialog(sharedUrl = sharedUrl, onDismiss = { finish() })
+                // Check auto-execute setting
+                val context = LocalContext.current
+                val settings = remember { SettingsManager(context) }
+                var autoExecute by remember { mutableStateOf(false) }
+                var command by remember { mutableStateOf("") }
+                var initialized by remember { mutableStateOf(false) }
+
+                LaunchedEffect(sharedUrl) {
+                    autoExecute = settings.getAutoExecute()
+                    command = settings.getDefaultCommand().replace("{URL}", sharedUrl)
+                    initialized = true
+                }
+
+                if (initialized) {
+                    if (autoExecute) {
+                        // Auto-execute mode: just show a brief status and execute
+                        AutoExecuteScreen(sharedUrl = sharedUrl, command = command, onDone = { finish() })
+                    } else {
+                        // Manual mode: show dialog to review/edit command
+                        ShareDialog(sharedUrl = sharedUrl, command = command, onDismiss = { finish() })
+                    }
+                }
             }
         }
     }
@@ -45,20 +67,68 @@ class ShareReceiverActivity : ComponentActivity() {
 }
 
 @Composable
-fun ShareDialog(sharedUrl: String, onDismiss: () -> Unit) {
+fun AutoExecuteScreen(sharedUrl: String, command: String, onDone: () -> Unit) {
+    val context = LocalContext.current
+    val settings = remember { SettingsManager(context) }
+    val scope = rememberCoroutineScope()
+    var status by remember { mutableStateOf("Connecting to TV...") }
+    var isError by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        val host = settings.getTvHost()
+        val port = settings.getTvPort()
+
+        if (host.isBlank()) {
+            status = "TV IP not set! Open app settings first."
+            isError = true
+            delay(2000)
+            onDone()
+            return@LaunchedEffect
+        }
+
+        val result = AdbManager.executeShell(context, host, port, command)
+        if (result.isSuccess) {
+            status = "Command sent to TV!"
+            isError = false
+            Toast.makeText(context, "Command sent to TV!", Toast.LENGTH_SHORT).show()
+            delay(800)
+            onDone()
+        } else {
+            status = "Failed: ${result.exceptionOrNull()?.message}"
+            isError = true
+            Toast.makeText(context, "Failed: ${result.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
+            delay(2000)
+            onDone()
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDone,
+        title = { Text("ADB Commander") },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally))
+                Text(
+                    status,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                )
+            }
+        },
+        confirmButton = {}
+    )
+}
+
+@Composable
+fun ShareDialog(sharedUrl: String, command: String, onDismiss: () -> Unit) {
     val context = LocalContext.current
     val settings = remember { SettingsManager(context) }
     val scope = rememberCoroutineScope()
 
-    var command by remember { mutableStateOf("") }
+    var editableCommand by remember { mutableStateOf(command) }
     var isExecuting by remember { mutableStateOf(false) }
     var resultMessage by remember { mutableStateOf<String?>(null) }
     var resultIsError by remember { mutableStateOf(false) }
-
-    LaunchedEffect(sharedUrl) {
-        val template = settings.getDefaultCommand()
-        command = template.replace("{URL}", sharedUrl)
-    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -66,45 +136,63 @@ fun ShareDialog(sharedUrl: String, onDismiss: () -> Unit) {
         text = {
             Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("Shared URL:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(sharedUrl, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace,
-                    color = MaterialTheme.colorScheme.primary, maxLines = 2)
+                Text(
+                    sharedUrl,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 2
+                )
                 HorizontalDivider()
                 Text("Shell command:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 OutlinedTextField(
-                    value = command,
-                    onValueChange = { command = it },
+                    value = editableCommand,
+                    onValueChange = { editableCommand = it },
                     placeholder = { Text("am start -a android.intent.action.VIEW -d \"{URL}\"") },
                     minLines = 3, maxLines = 8,
                     modifier = Modifier.fillMaxWidth(),
                     textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace)
                 )
                 resultMessage?.let { msg ->
-                    Text(msg, style = MaterialTheme.typography.bodySmall,
-                        color = if (resultIsError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
+                    Text(
+                        msg,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (resultIsError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                    )
                 }
             }
         },
         confirmButton = {
             Button(
                 onClick = {
-                    if (command.isBlank()) { resultMessage = "Command cannot be empty"; resultIsError = true; return@Button }
-                    isExecuting = true; resultMessage = null
+                    if (editableCommand.isBlank()) {
+                        resultMessage = "Command cannot be empty"
+                        resultIsError = true
+                        return@Button
+                    }
+                    isExecuting = true
+                    resultMessage = null
                     scope.launch {
                         val host = settings.getTvHost()
                         val port = settings.getTvPort()
                         if (host.isBlank()) {
-                            isExecuting = false; resultMessage = "TV IP not set. Open app settings first."; resultIsError = true; return@launch
+                            isExecuting = false
+                            resultMessage = "TV IP not set. Open app settings first."
+                            resultIsError = true
+                            return@launch
                         }
-                        val finalCommand = command.replace("{URL}", sharedUrl)
+                        val finalCommand = editableCommand.replace("{URL}", sharedUrl)
                         val result = AdbManager.executeShell(context, host, port, finalCommand)
                         isExecuting = false
                         if (result.isSuccess) {
-                            resultMessage = "Command sent to TV!"; resultIsError = false
-                            Toast.makeText(context, "Command sent to TV", Toast.LENGTH_SHORT).show()
-                            kotlinx.coroutines.delay(800)
+                            resultMessage = "Command sent to TV!"
+                            resultIsError = false
+                            Toast.makeText(context, "Command sent to TV!", Toast.LENGTH_SHORT).show()
+                            delay(800)
                             onDismiss()
                         } else {
-                            resultMessage = "Failed: ${result.exceptionOrNull()?.message}"; resultIsError = true
+                            resultMessage = "Failed: ${result.exceptionOrNull()?.message}"
+                            resultIsError = true
                         }
                     }
                 },

@@ -5,9 +5,11 @@ coreKtx = "1.15.0"
 lifecycleRuntimeKtx = "2.8.7"
 activityCompose = "1.9.3"
 composeBom = "2024.12.01"
-dadb = "1.2.10"
+libadb = "3.1.1"
+conscrypt = "2.5.3"
 coroutines = "1.9.0"
 datastore = "1.1.1"
+bouncyCastle = "1.81"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -20,7 +22,8 @@ androidx-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
 androidx-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
 androidx-material3 = { group = "androidx.compose.material3", name = "material3" }
 androidx-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended" }
-dadb = { group = "dev.mobile", name = "dadb", version.ref = "dadb" }
+libadb = { group = "com.github.MuntashirAkon", name = "libadb-android", version.ref = "libadb" }
+conscrypt = { group = "org.conscrypt", name = "conscrypt-android", version.ref = "conscrypt" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
 

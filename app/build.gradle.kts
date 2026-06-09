@@ -12,8 +12,8 @@ android {
         applicationId = "com.adbcommander"
         minSdk = 24
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -59,8 +59,11 @@ dependencies {
     implementation(libs.androidx.material.icons.extended)
     debugImplementation(libs.androidx.ui.tooling)
 
-    // ADB library - pure Java/Kotlin, no native binary needed
-    implementation(libs.dadb)
+    // ADB library with wireless pairing support
+    implementation(libs.libadb)
+
+    // Conscrypt for TLS 1.3 (required for ADB pairing on Android 7-8)
+    implementation(libs.conscrypt)
 
     // Coroutines
     implementation(libs.kotlinx.coroutines.android)
