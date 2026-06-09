@@ -2,6 +2,7 @@ package com.adbcommander
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.net.Uri
 import android.os.Build
 import android.util.Base64
 import android.util.Log
@@ -25,7 +26,8 @@ import javax.security.auth.x500.X500Principal
 
 /**
  * Manages ADB connections using libadb-android.
- * Handles RSA key pair generation, ADB authentication, and shell execution.
+ * Handles RSA key pair generation, ADB authentication, shell execution,
+ * and file push operations.
  */
 object AdbManager {
 
@@ -33,6 +35,8 @@ object AdbManager {
     private const val PREFS_NAME = "adb_keys"
     private const val KEY_PRIVATE = "private_key_b64"
     private const val KEY_CERT = "certificate_b64"
+    private const val REMOTE_FILE_DIR = "/sdcard/Download"
+    private const val REMOTE_FILE_NAME = "remote_shared_file.tmp"
 
     private var managerInstance: AdbConnectionManager? = null
 
@@ -51,13 +55,36 @@ object AdbManager {
      */
     fun sanitizeCommand(raw: String): String {
         var clean = raw.trim()
-        // Remove "adb shell " prefix (case-insensitive, handles double spacing too)
         val adbShellPattern = Regex("""^adb\s+shell\s+""", RegexOption.IGNORE_CASE)
         clean = adbShellPattern.replaceFirst(clean, "")
-        // Remove bare "adb " prefix if that's all that's left
         val adbPattern = Regex("""^adb\s+""", RegexOption.IGNORE_CASE)
         clean = adbPattern.replaceFirst(clean, "")
         return clean.trim()
+    }
+
+    /**
+     * Replace URL placeholders in a command template with the actual shared URL.
+     * Supports both {URL} and the literal YOUR_VIDEO_URL as placeholders.
+     * Then sanitizes the result to strip any "adb shell" / "adb" prefixes.
+     */
+    fun prepareCommand(template: String, sharedUrl: String): String {
+        var cmd = template
+            .replace("{URL}", sharedUrl)
+            .replace("YOUR_VIDEO_URL", sharedUrl)
+        return sanitizeCommand(cmd)
+    }
+
+    /**
+     * Replace file placeholder {FILE} with the remote file path on the TV.
+     * Also replaces {URL} with the httpUrl (for HTTP streaming presets).
+     * Then sanitizes the result.
+     */
+    fun prepareFileCommand(template: String, remoteFilePath: String, httpUrl: String): String {
+        var cmd = template
+            .replace("{FILE}", "file://$remoteFilePath")
+            .replace("{URL}", httpUrl)
+            .replace("YOUR_VIDEO_URL", httpUrl)
+        return sanitizeCommand(cmd)
     }
 
     /**
@@ -114,6 +141,7 @@ object AdbManager {
                 Result.success(output.ifBlank { "Command executed (no output)" })
             } catch (e: Exception) {
                 Log.e(TAG, "Shell execution failed", e)
+                try { getManager(context).disconnect() } catch (_: Exception) {}
                 Result.failure(IOException("Connection failed: ${e.message}", e))
             }
         }
@@ -121,21 +149,101 @@ object AdbManager {
     suspend fun testConnection(context: Context, host: String, port: Int): Result<String> =
         executeShell(context, host, port, "echo ok")
 
+    /**
+     * Push a local file to the TV via ADB shell using base64 encoding.
+     * Suitable for small files (under ~2MB). For larger files, use HTTP streaming.
+     *
+     * @return the remote file path on the TV
+     */
+    suspend fun pushFileSmall(
+        context: Context,
+        host: String,
+        port: Int,
+        fileUri: Uri,
+        fileName: String
+    ): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            val fileBytes = context.contentResolver.openInputStream(fileUri)?.use { it.readBytes() }
+                ?: return@withContext Result.failure(IOException("Cannot read file"))
+
+            val fileSizeMB = fileBytes.size / (1024.0 * 1024.0)
+            Log.d(TAG, "Pushing file '$fileName' (${String.format("%.1f", fileSizeMB)}MB) to TV")
+
+            if (fileBytes.size > 2 * 1024 * 1024) {
+                return@withContext Result.failure(
+                    IOException("File too large for direct push (${String.format("%.1f", fileSizeMB)}MB). Use HTTP streaming instead.")
+                )
+            }
+
+            val remotePath = "$REMOTE_FILE_DIR/$fileName"
+
+            // Truncate/create the remote file first
+            val initResult = executeShell(context, host, port, "echo -n '' > $remotePath")
+            if (initResult.isFailure) {
+                return@withContext Result.failure(IOException("Failed to create remote file: ${initResult.exceptionOrNull()?.message}"))
+            }
+
+            // Send file content in base64 chunks
+            val base64 = Base64.encodeToString(fileBytes, Base64.NO_WRAP)
+            val chunkSize = 3000 // safe for shell command length
+            var offset = 0
+            var chunkNum = 0
+
+            while (offset < base64.length) {
+                val end = minOf(offset + chunkSize, base64.length)
+                val chunk = base64.substring(offset, end)
+                val cmd = "echo -n '$chunk' | base64 -d >> $remotePath"
+                val result = executeShell(context, host, port, cmd)
+                if (result.isFailure) {
+                    return@withContext Result.failure(
+                        IOException("Failed at chunk $chunkNum: ${result.exceptionOrNull()?.message}")
+                    )
+                }
+                offset = end
+                chunkNum++
+            }
+
+            // Verify file was written
+            val verifyResult = executeShell(context, host, port, "ls -la $remotePath")
+            Log.d(TAG, "File push verification: ${verifyResult.getOrDefault("unknown")}")
+
+            Result.success(remotePath)
+        } catch (e: Exception) {
+            Log.e(TAG, "File push failed", e)
+            Result.failure(IOException("File push failed: ${e.message}", e))
+        }
+    }
+
     fun extractUrl(sharedText: String): String? {
+        // Support magnet URIs (for Stremio etc.) — don't drop query parameters
+        val magnetRegex = Regex("""magnet:\?[^\s<>"{}|\\^`\[\]]+""", RegexOption.IGNORE_CASE)
+        val magnetMatch = magnetRegex.find(sharedText)
+        if (magnetMatch != null) return magnetMatch.value
+
+        // Standard HTTP(S) URLs
         val urlRegex = Regex("""https?://[^\s<>"{}|\\^`\[\]]+""", RegexOption.IGNORE_CASE)
         return urlRegex.find(sharedText)?.value
     }
 
     /**
-     * Replace URL placeholders in a command template with the actual shared URL.
-     * Supports both {URL} and the literal YOUR_VIDEO_URL as placeholders.
-     * Then sanitizes the result to strip any "adb shell" / "adb" prefixes.
+     * Get the file extension from a MIME type.
      */
-    fun prepareCommand(template: String, sharedUrl: String): String {
-        var cmd = template
-            .replace("{URL}", sharedUrl)
-            .replace("YOUR_VIDEO_URL", sharedUrl)
-        return sanitizeCommand(cmd)
+    fun getExtensionFromMimeType(mimeType: String?): String {
+        if (mimeType.isNullOrBlank()) return "tmp"
+        return when {
+            mimeType.contains("mp4") -> "mp4"
+            mimeType.contains("mkv") -> "mkv"
+            mimeType.contains("avi") -> "avi"
+            mimeType.contains("webm") -> "webm"
+            mimeType.contains("mp3") -> "mp3"
+            mimeType.contains("mpeg") || mimeType.contains("mpg") -> "mpeg"
+            mimeType.contains("ogg") -> "ogg"
+            mimeType.contains("flac") -> "flac"
+            mimeType.contains("wav") -> "wav"
+            mimeType.contains("audio") -> "mp3"
+            mimeType.contains("video") -> "mp4"
+            else -> "tmp"
+        }
     }
 
     // ── AdbConnectionManager implementation ────────────────────────────
