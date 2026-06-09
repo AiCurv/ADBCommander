@@ -34,7 +34,6 @@ class ShareReceiverActivity : ComponentActivity() {
 
         setContent {
             ADBCommanderTheme {
-                // Check auto-execute setting
                 val context = LocalContext.current
                 val settings = remember { SettingsManager(context) }
                 var autoExecute by remember { mutableStateOf(false) }
@@ -49,10 +48,8 @@ class ShareReceiverActivity : ComponentActivity() {
 
                 if (initialized) {
                     if (autoExecute) {
-                        // Auto-execute mode: just show a brief status and execute
-                        AutoExecuteScreen(sharedUrl = sharedUrl, command = command, onDone = { finish() })
+                        AutoExecuteScreen(command = command, onDone = { finish() })
                     } else {
-                        // Manual mode: show dialog to review/edit command
                         ShareDialog(sharedUrl = sharedUrl, command = command, onDismiss = { finish() })
                     }
                 }
@@ -67,10 +64,9 @@ class ShareReceiverActivity : ComponentActivity() {
 }
 
 @Composable
-fun AutoExecuteScreen(sharedUrl: String, command: String, onDone: () -> Unit) {
+fun AutoExecuteScreen(command: String, onDone: () -> Unit) {
     val context = LocalContext.current
     val settings = remember { SettingsManager(context) }
-    val scope = rememberCoroutineScope()
     var status by remember { mutableStateOf("Connecting to TV...") }
     var isError by remember { mutableStateOf(false) }
 
@@ -90,7 +86,7 @@ fun AutoExecuteScreen(sharedUrl: String, command: String, onDone: () -> Unit) {
         if (result.isSuccess) {
             status = "Command sent to TV!"
             isError = false
-            Toast.makeText(context, "Command sent to TV!", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "Sent! ${result.getOrDefault("")}", Toast.LENGTH_SHORT).show()
             delay(800)
             onDone()
         } else {
@@ -166,12 +162,9 @@ fun ShareDialog(sharedUrl: String, command: String, onDismiss: () -> Unit) {
             Button(
                 onClick = {
                     if (editableCommand.isBlank()) {
-                        resultMessage = "Command cannot be empty"
-                        resultIsError = true
-                        return@Button
+                        resultMessage = "Command cannot be empty"; resultIsError = true; return@Button
                     }
-                    isExecuting = true
-                    resultMessage = null
+                    isExecuting = true; resultMessage = null
                     scope.launch {
                         val host = settings.getTvHost()
                         val port = settings.getTvPort()
@@ -181,13 +174,14 @@ fun ShareDialog(sharedUrl: String, command: String, onDismiss: () -> Unit) {
                             resultIsError = true
                             return@launch
                         }
+                        // Replace placeholder then sanitize (strips "adb shell" etc.)
                         val finalCommand = editableCommand.replace("{URL}", sharedUrl)
                         val result = AdbManager.executeShell(context, host, port, finalCommand)
                         isExecuting = false
                         if (result.isSuccess) {
-                            resultMessage = "Command sent to TV!"
+                            resultMessage = "OK: ${result.getOrDefault("")}"
                             resultIsError = false
-                            Toast.makeText(context, "Command sent to TV!", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "Sent!", Toast.LENGTH_SHORT).show()
                             delay(800)
                             onDismiss()
                         } else {
