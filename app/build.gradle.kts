@@ -65,6 +65,9 @@ dependencies {
     // Conscrypt for TLS 1.3 (required for ADB pairing on Android 7-8)
     implementation(libs.conscrypt)
 
+    // BouncyCastle for X509 certificate generation (used by ADB key management)
+    implementation(libs.bouncy.castle)
+
     // Coroutines
     implementation(libs.kotlinx.coroutines.android)
 
