@@ -1,6 +1,8 @@
 package com.adbcommander
 
 import android.content.Context
+import android.content.SharedPreferences
+import org.json.JSONArray
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
@@ -21,25 +23,125 @@ class SettingsManager(private val context: Context) {
         val KEY_TV_PORT = intPreferencesKey("tv_port")
         val KEY_DEFAULT_COMMAND = stringPreferencesKey("default_command")
         val KEY_AUTO_EXECUTE = booleanPreferencesKey("auto_execute")
+        val KEY_SELECTED_PRESET = stringPreferencesKey("selected_preset")
 
         const val DEFAULT_TV_HOST = ""
         const val DEFAULT_TV_PORT = 5555
         const val DEFAULT_COMMAND = """am start -a android.intent.action.VIEW -d "{URL}" -t "video/*" net.gtvbox.videoplayer"""
         const val DEFAULT_AUTO_EXECUTE = false
+
+        // ── Preset constants ─────────────────────────────────────────
+        private const val PRESETS_PREFS_NAME = "adb_commander_presets"
+        private const val KEY_PRESETS_JSON = "presets_json"
+
+        // Built-in presets (always available)
+        val BUILT_IN_PRESETS = listOf(
+            Preset("Default Video Player", """am start -a android.intent.action.VIEW -d "{URL}" -t "video/*" net.gtvbox.videoplayer"""),
+            Preset("VLC Player", """am start -n org.videolan.vlc/org.videolan.vlc.gui.video.VideoPlayerActivity -d "{URL}""""),
+            Preset("Custom Template", "")
+        )
     }
+
+    data class Preset(val name: String, val command: String)
+
+    // ── DataStore settings (existing) ────────────────────────────────
 
     val tvHost = context.dataStore.data.map { it[KEY_TV_HOST] ?: DEFAULT_TV_HOST }
     val tvPort = context.dataStore.data.map { it[KEY_TV_PORT] ?: DEFAULT_TV_PORT }
     val defaultCommand = context.dataStore.data.map { it[KEY_DEFAULT_COMMAND] ?: DEFAULT_COMMAND }
     val autoExecute = context.dataStore.data.map { it[KEY_AUTO_EXECUTE] ?: DEFAULT_AUTO_EXECUTE }
+    val selectedPreset = context.dataStore.data.map { it[KEY_SELECTED_PRESET] ?: "Default Video Player" }
 
     suspend fun getTvHost(): String = tvHost.first()
     suspend fun getTvPort(): Int = tvPort.first()
     suspend fun getDefaultCommand(): String = defaultCommand.first()
     suspend fun getAutoExecute(): Boolean = autoExecute.first()
+    suspend fun getSelectedPreset(): String = selectedPreset.first()
 
     suspend fun setTvHost(host: String) { context.dataStore.edit { it[KEY_TV_HOST] = host } }
     suspend fun setTvPort(port: Int) { context.dataStore.edit { it[KEY_TV_PORT] = port } }
     suspend fun setDefaultCommand(command: String) { context.dataStore.edit { it[KEY_DEFAULT_COMMAND] = command } }
     suspend fun setAutoExecute(auto: Boolean) { context.dataStore.edit { it[KEY_AUTO_EXECUTE] = auto } }
+    suspend fun setSelectedPreset(name: String) { context.dataStore.edit { it[KEY_SELECTED_PRESET] = name } }
+
+    // ── Preset management via SharedPreferences ──────────────────────
+
+    private val presetsPrefs: SharedPreferences by lazy {
+        context.getSharedPreferences(PRESETS_PREFS_NAME, Context.MODE_PRIVATE)
+    }
+
+    /**
+     * Returns all presets: built-in first, then user-created custom presets.
+     */
+    fun getAllPresets(): List<Preset> {
+        val customPresets = loadCustomPresets()
+        return BUILT_IN_PRESETS + customPresets
+    }
+
+    /**
+     * Save a new custom preset. The name must not collide with built-in presets.
+     * Returns true if saved successfully, false if name already exists.
+     */
+    fun saveCustomPreset(name: String, command: String): Boolean {
+        if (name.isBlank()) return false
+        // Check if name already exists in built-in presets
+        if (BUILT_IN_PRESETS.any { it.name.equals(name, ignoreCase = true) }) return false
+
+        val presets = loadCustomPresets().toMutableList()
+        // Check if name already exists in custom presets — update if so
+        val existingIndex = presets.indexOfFirst { it.name.equals(name, ignoreCase = true) }
+        if (existingIndex >= 0) {
+            presets[existingIndex] = Preset(name, command)
+        } else {
+            presets.add(Preset(name, command))
+        }
+
+        saveCustomPresets(presets)
+        return true
+    }
+
+    /**
+     * Delete a custom preset by name. Cannot delete built-in presets.
+     */
+    fun deleteCustomPreset(name: String): Boolean {
+        val presets = loadCustomPresets().toMutableList()
+        val removed = presets.removeAll { it.name == name }
+        if (removed) saveCustomPresets(presets)
+        return removed
+    }
+
+    /**
+     * Get the command template for a given preset name.
+     * Returns null if preset not found.
+     */
+    fun getPresetCommand(presetName: String): String? {
+        // Check built-in first
+        BUILT_IN_PRESETS.find { it.name == presetName }?.let { return it.command }
+        // Then check custom
+        return loadCustomPresets().find { it.name == presetName }?.command
+    }
+
+    private fun loadCustomPresets(): List<Preset> {
+        val json = presetsPrefs.getString(KEY_PRESETS_JSON, null) ?: return emptyList()
+        return try {
+            val arr = JSONArray(json)
+            (0 until arr.length()).map { i ->
+                val obj = arr.getJSONObject(i)
+                Preset(obj.getString("name"), obj.getString("command"))
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun saveCustomPresets(presets: List<Preset>) {
+        val arr = JSONArray()
+        presets.forEach { p ->
+            val obj = org.json.JSONObject()
+            obj.put("name", p.name)
+            obj.put("command", p.command)
+            arr.put(obj)
+        }
+        presetsPrefs.edit().putString(KEY_PRESETS_JSON, arr.toString()).apply()
+    }
 }

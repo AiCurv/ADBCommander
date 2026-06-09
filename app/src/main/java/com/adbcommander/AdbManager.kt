@@ -126,6 +126,18 @@ object AdbManager {
         return urlRegex.find(sharedText)?.value
     }
 
+    /**
+     * Replace URL placeholders in a command template with the actual shared URL.
+     * Supports both {URL} and the literal YOUR_VIDEO_URL as placeholders.
+     * Then sanitizes the result to strip any "adb shell" / "adb" prefixes.
+     */
+    fun prepareCommand(template: String, sharedUrl: String): String {
+        var cmd = template
+            .replace("{URL}", sharedUrl)
+            .replace("YOUR_VIDEO_URL", sharedUrl)
+        return sanitizeCommand(cmd)
+    }
+
     // ── AdbConnectionManager implementation ────────────────────────────
 
     class AdbConnectionManager(private val prefs: SharedPreferences) : AbsAdbConnectionManager() {

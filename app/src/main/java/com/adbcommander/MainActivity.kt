@@ -1,6 +1,11 @@
 package com.adbcommander
 
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -25,11 +30,29 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        requestBatteryExemption()
         enableEdgeToEdge()
         setContent {
             ADBCommanderTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     MainScreen()
+                }
+            }
+        }
+    }
+
+    private fun requestBatteryExemption() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val packageName = packageName
+            val pm = getSystemService(POWER_SERVICE) as PowerManager
+            if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+                try {
+                    val intent = Intent()
+                    intent.action = Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
+                    intent.data = Uri.parse("package:$packageName")
+                    startActivity(intent)
+                } catch (e: Exception) {
+                    // Some devices may not support this intent
                 }
             }
         }
@@ -54,11 +77,96 @@ fun MainScreen() {
     var runOutput by remember { mutableStateOf<String?>(null) }
     var isRunning by remember { mutableStateOf(false) }
 
+    // ── Preset state ─────────────────────────────────────────────────
+    var presets by remember { mutableStateOf(settings.getAllPresets()) }
+    var selectedPresetName by remember { mutableStateOf("Default Video Player") }
+    var presetExpanded by remember { mutableStateOf(false) }
+
+    // ── Save preset dialog state ─────────────────────────────────────
+    var showSaveDialog by remember { mutableStateOf(false) }
+    var newPresetName by remember { mutableStateOf("") }
+
+    // ── Delete preset dialog state ───────────────────────────────────
+    var showDeleteDialog by remember { mutableStateOf(false) }
+    var presetToDelete by remember { mutableStateOf<String?>(null) }
+
     LaunchedEffect(Unit) {
         tvHost = settings.getTvHost()
         tvPort = settings.getTvPort()
         customCommand = settings.getDefaultCommand()
         autoExecute = settings.getAutoExecute()
+        selectedPresetName = settings.getSelectedPreset()
+    }
+
+    // ── Save Preset Dialog ───────────────────────────────────────────
+    if (showSaveDialog) {
+        AlertDialog(
+            onDismissRequest = { showSaveDialog = false; newPresetName = "" },
+            title = { Text("Save as Preset") },
+            text = {
+                OutlinedTextField(
+                    value = newPresetName,
+                    onValueChange = { newPresetName = it },
+                    label = { Text("Preset name") },
+                    placeholder = { Text("My Custom Command") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (newPresetName.isNotBlank() && customCommand.isNotBlank()) {
+                            val saved = settings.saveCustomPreset(newPresetName.trim(), customCommand)
+                            if (saved) {
+                                presets = settings.getAllPresets()
+                                selectedPresetName = newPresetName.trim()
+                                scope.launch { settings.setSelectedPreset(selectedPresetName) }
+                                Toast.makeText(context, "Preset \"$selectedPresetName\" saved!", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(context, "Name conflicts with built-in preset", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                        showSaveDialog = false
+                        newPresetName = ""
+                    }
+                ) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSaveDialog = false; newPresetName = "" }) { Text("Cancel") }
+            }
+        )
+    }
+
+    // ── Delete Preset Confirmation Dialog ────────────────────────────
+    if (showDeleteDialog && presetToDelete != null) {
+        AlertDialog(
+            onDismissRequest = { showDeleteDialog = false; presetToDelete = null },
+            title = { Text("Delete Preset") },
+            text = { Text("Delete preset \"${presetToDelete}\"? This cannot be undone.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        settings.deleteCustomPreset(presetToDelete!!)
+                        presets = settings.getAllPresets()
+                        if (selectedPresetName == presetToDelete) {
+                            selectedPresetName = "Default Video Player"
+                            customCommand = settings.getPresetCommand("Default Video Player") ?: SettingsManager.DEFAULT_COMMAND
+                            scope.launch {
+                                settings.setSelectedPreset(selectedPresetName)
+                                settings.setDefaultCommand(customCommand)
+                            }
+                        }
+                        showDeleteDialog = false
+                        presetToDelete = null
+                        Toast.makeText(context, "Preset deleted", Toast.LENGTH_SHORT).show()
+                    }
+                ) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteDialog = false; presetToDelete = null }) { Text("Cancel") }
+            }
+        )
     }
 
     Scaffold(
@@ -138,10 +246,107 @@ fun MainScreen() {
             }
 
             // ═══════════════════════════════════════════════════════════
-            //  MIDDLE — Custom Command + Run
+            //  MIDDLE — Command Presets + Custom Command + Run
             // ═══════════════════════════════════════════════════════════
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-            SectionHeader("Custom Command", Icons.Filled.Terminal)
+            SectionHeader("Command Presets", Icons.Filled.List)
+
+            // ── Dropdown for preset selection ─────────────────────────
+            ExposedDropdownMenuBox(
+                expanded = presetExpanded,
+                onExpandedChange = { presetExpanded = !presetExpanded }
+            ) {
+                OutlinedTextField(
+                    value = selectedPresetName,
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Select Preset") },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = presetExpanded) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .menuAnchor()
+                )
+
+                ExposedDropdownMenu(
+                    expanded = presetExpanded,
+                    onDismissRequest = { presetExpanded = false }
+                ) {
+                    presets.forEach { preset ->
+                        DropdownMenuItem(
+                            text = {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            preset.name,
+                                            style = MaterialTheme.typography.bodyLarge
+                                        )
+                                        if (preset.command.isNotBlank()) {
+                                            Text(
+                                                preset.command.take(60) + if (preset.command.length > 60) "..." else "",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                fontFamily = FontFamily.Monospace,
+                                                maxLines = 1
+                                            )
+                                        } else {
+                                            Text(
+                                                "Blank template — type your own",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                                            )
+                                        }
+                                    }
+                                    // Show delete icon for custom presets (not built-in)
+                                    val isBuiltIn = SettingsManager.BUILT_IN_PRESETS.any { it.name == preset.name }
+                                    if (!isBuiltIn) {
+                                        IconButton(
+                                            onClick = {
+                                                presetToDelete = preset.name
+                                                showDeleteDialog = true
+                                            }
+                                        ) {
+                                            Icon(
+                                                Icons.Filled.Delete,
+                                                contentDescription = "Delete preset",
+                                                tint = MaterialTheme.colorScheme.error,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            },
+                            onClick = {
+                                selectedPresetName = preset.name
+                                customCommand = preset.command
+                                scope.launch {
+                                    settings.setSelectedPreset(preset.name)
+                                    settings.setDefaultCommand(preset.command)
+                                }
+                                presetExpanded = false
+                            }
+                        )
+                    }
+                }
+            }
+
+            // ── Save Current as Preset button ────────────────────────
+            OutlinedButton(
+                onClick = { showSaveDialog = true },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = customCommand.isNotBlank()
+            ) {
+                Icon(Icons.Filled.Save, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("SAVE CURRENT AS PRESET")
+            }
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
+
+            // ── Command text area ────────────────────────────────────
+            SectionHeader("Shell Command", Icons.Filled.Terminal)
 
             Text(
                 "Use {URL} as placeholder — it auto-replaces with shared links. \"adb shell\" prefix is stripped automatically.",
@@ -151,7 +356,17 @@ fun MainScreen() {
 
             OutlinedTextField(
                 value = customCommand,
-                onValueChange = { customCommand = it; scope.launch { settings.setDefaultCommand(it) } },
+                onValueChange = {
+                    customCommand = it
+                    // Mark as custom if it doesn't match any preset
+                    val matchingPreset = presets.find { p -> p.command == it }
+                    if (matchingPreset == null) {
+                        selectedPresetName = "Custom Template"
+                    } else {
+                        selectedPresetName = matchingPreset.name
+                    }
+                    scope.launch { settings.setDefaultCommand(it) }
+                },
                 label = { Text("Shell Command") },
                 placeholder = { Text("am start -a android.intent.action.VIEW -d \"{URL}\" -t \"video/*\"") },
                 minLines = 3, maxLines = 8,
@@ -159,6 +374,7 @@ fun MainScreen() {
                 textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace)
             )
 
+            // ── RUN COMMAND button ───────────────────────────────────
             Button(
                 onClick = {
                     if (customCommand.isBlank()) {
@@ -188,7 +404,10 @@ fun MainScreen() {
             ) {
                 Icon(Icons.Filled.PlayArrow, contentDescription = null)
                 Spacer(Modifier.width(6.dp))
-                Text(if (isRunning) "Running..." else "▶ RUN COMMAND", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    if (isRunning) "Running..." else "▶ RUN COMMAND",
+                    style = MaterialTheme.typography.titleMedium
+                )
             }
 
             runOutput?.let {

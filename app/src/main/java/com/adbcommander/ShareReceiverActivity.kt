@@ -2,6 +2,7 @@ package com.adbcommander
 
 import android.content.Intent
 import android.os.Bundle
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -20,11 +21,18 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class ShareReceiverActivity : ComponentActivity() {
+    companion object {
+        private const val TAG = "ShareReceiver"
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         val sharedText = intent?.getStringExtra(Intent.EXTRA_TEXT) ?: ""
         val sharedUrl = AdbManager.extractUrl(sharedText) ?: sharedText.ifBlank { null }
+
+        Log.d(TAG, "Share received — raw text: $sharedText")
+        Log.d(TAG, "Extracted URL: $sharedUrl")
 
         if (sharedUrl == null) {
             Toast.makeText(this, "No URL found in shared text", Toast.LENGTH_SHORT).show()
@@ -42,13 +50,18 @@ class ShareReceiverActivity : ComponentActivity() {
 
                 LaunchedEffect(sharedUrl) {
                     autoExecute = settings.getAutoExecute()
-                    command = settings.getDefaultCommand().replace("{URL}", sharedUrl)
+                    val template = settings.getDefaultCommand()
+                    // Use prepareCommand which replaces BOTH {URL} and YOUR_VIDEO_URL
+                    // then strips any "adb shell" / "adb" prefixes
+                    command = AdbManager.prepareCommand(template, sharedUrl)
+                    Log.d(TAG, "Template: $template")
+                    Log.d(TAG, "Final command: $command")
                     initialized = true
                 }
 
                 if (initialized) {
                     if (autoExecute) {
-                        AutoExecuteScreen(command = command, onDone = { finish() })
+                        AutoExecuteScreen(command = command, sharedUrl = sharedUrl, onDone = { finish() })
                     } else {
                         ShareDialog(sharedUrl = sharedUrl, command = command, onDismiss = { finish() })
                     }
@@ -64,7 +77,7 @@ class ShareReceiverActivity : ComponentActivity() {
 }
 
 @Composable
-fun AutoExecuteScreen(command: String, onDone: () -> Unit) {
+fun AutoExecuteScreen(command: String, sharedUrl: String, onDone: () -> Unit) {
     val context = LocalContext.current
     val settings = remember { SettingsManager(context) }
     var status by remember { mutableStateOf("Connecting to TV...") }
@@ -82,6 +95,15 @@ fun AutoExecuteScreen(command: String, onDone: () -> Unit) {
             return@LaunchedEffect
         }
 
+        if (command.isBlank()) {
+            status = "Command is empty after URL substitution!"
+            isError = true
+            delay(2000)
+            onDone()
+            return@LaunchedEffect
+        }
+
+        // Command is already prepared (URL replaced, adb shell stripped) by ShareReceiverActivity
         val result = AdbManager.executeShell(context, host, port, command)
         if (result.isSuccess) {
             status = "Command sent to TV!"
@@ -109,6 +131,13 @@ fun AutoExecuteScreen(command: String, onDone: () -> Unit) {
                     style = MaterialTheme.typography.bodyMedium,
                     color = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                 )
+                Text(
+                    "URL: $sharedUrl",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2
+                )
             }
         },
         confirmButton = {}
@@ -121,6 +150,7 @@ fun ShareDialog(sharedUrl: String, command: String, onDismiss: () -> Unit) {
     val settings = remember { SettingsManager(context) }
     val scope = rememberCoroutineScope()
 
+    // Command is already prepared with URL replaced and adb shell stripped
     var editableCommand by remember { mutableStateOf(command) }
     var isExecuting by remember { mutableStateOf(false) }
     var resultMessage by remember { mutableStateOf<String?>(null) }
@@ -174,8 +204,9 @@ fun ShareDialog(sharedUrl: String, command: String, onDismiss: () -> Unit) {
                             resultIsError = true
                             return@launch
                         }
-                        // Replace placeholder then sanitize (strips "adb shell" etc.)
-                        val finalCommand = editableCommand.replace("{URL}", sharedUrl)
+                        // editableCommand already has the URL replaced.
+                        // sanitizeCommand will strip any "adb shell" / "adb" prefixes just in case.
+                        val finalCommand = AdbManager.sanitizeCommand(editableCommand)
                         val result = AdbManager.executeShell(context, host, port, finalCommand)
                         isExecuting = false
                         if (result.isSuccess) {
