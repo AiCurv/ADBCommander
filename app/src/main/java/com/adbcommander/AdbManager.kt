@@ -214,15 +214,27 @@ object AdbManager {
         }
     }
 
+    /**
+     * Extract a URL/URI from shared text. Universal — supports any scheme:
+     * http, https, ftp, content, file, market, .apk download links, magnet, etc.
+     * Falls back to the full raw shared text if no URI pattern matches,
+     * so nothing the phone sends ever gets silently dropped.
+     */
     fun extractUrl(sharedText: String): String? {
-        // Support magnet URIs (for Stremio etc.) — don't drop query parameters
+        if (sharedText.isBlank()) return null
+
+        // Universal URI: any_scheme://anything (no whitespace)
+        val universalRegex = Regex("""[a-zA-Z][a-zA-Z0-9+.-]*://[^\s<>"{}|\\^`\[\]]+""")
+        val universalMatch = universalRegex.find(sharedText)
+        if (universalMatch != null) return universalMatch.value
+
+        // Magnet URIs (magnet:? — no // after colon)
         val magnetRegex = Regex("""magnet:\?[^\s<>"{}|\\^`\[\]]+""", RegexOption.IGNORE_CASE)
         val magnetMatch = magnetRegex.find(sharedText)
         if (magnetMatch != null) return magnetMatch.value
 
-        // Standard HTTP(S) URLs
-        val urlRegex = Regex("""https?://[^\s<>"{}|\\^`\[\]]+""", RegexOption.IGNORE_CASE)
-        return urlRegex.find(sharedText)?.value
+        // No URI pattern found — return the full raw text the phone sent
+        return sharedText.trim().ifBlank { null }
     }
 
     /**
