@@ -383,7 +383,7 @@ fun CommanderTab() {
         SectionHeader("Shell Command", Icons.Filled.Terminal)
 
         Text(
-            "Use {URL} for shared links, {FILE} for local files. \"adb shell\" prefix is stripped automatically.",
+            "Use bare {URL} for shared links, {FILE} for local files — NO quotes around placeholders. \"adb shell\" prefix stripped. URLs are shell-escaped automatically.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -398,7 +398,7 @@ fun CommanderTab() {
                 scope.launch { settings.setDefaultCommand(it) }
             },
             label = { Text("Shell Command") },
-            placeholder = { Text("am start -a android.intent.action.VIEW -d \"{URL}\" -t \"video/*\"") },
+            placeholder = { Text("am start -a android.intent.action.VIEW -d {URL}") },
             minLines = 3, maxLines = 8,
             modifier = Modifier.fillMaxWidth(),
             textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace)

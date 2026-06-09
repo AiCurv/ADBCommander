@@ -63,27 +63,51 @@ object AdbManager {
     }
 
     /**
-     * Replace URL placeholders in a command template with the actual shared URL.
+     * Escape a string for safe insertion into a Linux shell command.
+     * Wraps the value in single quotes and escapes any embedded single quotes.
+     * This prevents &, ?, =, ;, |, and other shell metacharacters from
+     * fragmenting the command.
+     *
+     * Example: https://site.com/file.apk?id=1&type=mp4
+     *   → 'https://site.com/file.apk?id=1&type=mp4'
+     *
+     * IMPORTANT: Preset templates must use bare {URL} / {FILE} placeholders
+     * with NO surrounding quotes. shellEscape() adds the quotes at runtime.
+     * Double-quoting ('{URL}' + shellEscape) produces ''url'' which is wrong.
+     */
+    fun shellEscape(value: String): String {
+        val escaped = value.replace("'", "'\\''")
+        return "'$escaped'"
+    }
+
+    /**
+     * Replace URL placeholders in a command template with the actual shared URL,
+     * safely shell-escaped so metacharacters like &, ?, = don't fragment the command.
      * Supports both {URL} and the literal YOUR_VIDEO_URL as placeholders.
      * Then sanitizes the result to strip any "adb shell" / "adb" prefixes.
      */
     fun prepareCommand(template: String, sharedUrl: String): String {
+        val escapedUrl = shellEscape(sharedUrl)
         var cmd = template
-            .replace("{URL}", sharedUrl)
-            .replace("YOUR_VIDEO_URL", sharedUrl)
+            .replace("{URL}", escapedUrl)
+            .replace("YOUR_VIDEO_URL", escapedUrl)
         return sanitizeCommand(cmd)
     }
 
     /**
-     * Replace file placeholder {FILE} with the remote file path on the TV.
-     * Also replaces {URL} with the httpUrl (for HTTP streaming presets).
+     * Replace file placeholder {FILE} with the remote file path on the TV,
+     * and {URL} with the HTTP streaming URL. Both are properly shell-escaped.
      * Then sanitizes the result.
      */
     fun prepareFileCommand(template: String, remoteFilePath: String, httpUrl: String): String {
         var cmd = template
-            .replace("{FILE}", "file://$remoteFilePath")
-            .replace("{URL}", httpUrl)
-            .replace("YOUR_VIDEO_URL", httpUrl)
+        if (remoteFilePath.isNotBlank()) {
+            cmd = cmd.replace("{FILE}", shellEscape("file://$remoteFilePath"))
+        }
+        if (httpUrl.isNotBlank()) {
+            cmd = cmd.replace("{URL}", shellEscape(httpUrl))
+                .replace("YOUR_VIDEO_URL", shellEscape(httpUrl))
+        }
         return sanitizeCommand(cmd)
     }
 

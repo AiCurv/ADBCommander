@@ -29,7 +29,7 @@ class SettingsManager(private val context: Context) {
 
         const val DEFAULT_TV_HOST = ""
         const val DEFAULT_TV_PORT = 5555
-        const val DEFAULT_COMMAND = """am start -a android.intent.action.VIEW -d "{URL}" -t "video/*" net.gtvbox.videoplayer"""
+        const val DEFAULT_COMMAND = """am start -a android.intent.action.VIEW -d {URL} -t video/* net.gtvbox.videoplayer"""
         const val DEFAULT_AUTO_EXECUTE = false
         const val CONTENT_TYPE_URL = "url"
         const val CONTENT_TYPE_FILE = "file"
@@ -39,12 +39,14 @@ class SettingsManager(private val context: Context) {
         private const val KEY_PRESETS_JSON = "presets_json"
 
         // Built-in presets (always available) — organized for both URL and File sharing
+        // Bare {URL}/{FILE} placeholders — NO surrounding quotes.
+        // shellEscape() in AdbManager adds single quotes at runtime.
         val BUILT_IN_PRESETS = listOf(
-            Preset("Default Video Player", """am start -a android.intent.action.VIEW -d "{URL}" -t "video/*" net.gtvbox.videoplayer"""),
-            Preset("VLC Player", """am start -n org.videolan.vlc/org.videolan.vlc.gui.video.VideoPlayerActivity -d "{URL}""""),
-            Preset("SmartTube", """am start -a android.intent.action.VIEW -d "{URL}" com.teamsmart.videomanager.tv"""),
-            Preset("Stremio (Magnet/Stream)", """am start -a android.intent.action.VIEW -d "{URL}" -t "application/x-mpegurl" com.stremio.one"""),
-            Preset("Local File Player", """am start -a android.intent.action.VIEW -d "{FILE}" -t "video/*" net.gtvbox.videoplayer"""),
+            Preset("Default Video Player", """am start -a android.intent.action.VIEW -d {URL} -t video/* net.gtvbox.videoplayer"""),
+            Preset("VLC Player", """am start -n org.videolan.vlc/org.videolan.vlc.gui.video.VideoPlayerActivity -d {URL}"""),
+            Preset("SmartTube", """am start -a android.intent.action.VIEW -d {URL} com.teamsmart.videomanager.tv"""),
+            Preset("Stremio (Magnet/Stream)", """am start -a android.intent.action.VIEW -d {URL} -t application/x-mpegurl com.stremio.one"""),
+            Preset("Local File Player", """am start -a android.intent.action.VIEW -d {FILE} -t video/* net.gtvbox.videoplayer"""),
             Preset("Custom Template", "")
         )
     }
@@ -135,20 +137,22 @@ class SettingsManager(private val context: Context) {
 
     /**
      * Build an `am start` command from package exploration data.
+     * Bare {URL}/{FILE} placeholders — NO surrounding quotes.
+     * shellEscape() in AdbManager adds single quotes at runtime.
      */
     fun buildPresetFromPackage(
         presetName: String,
         packageName: String,
         action: String = "android.intent.action.VIEW",
         dataUri: String = "{URL}",
-        type: String = "video/*",
+        type: String = "",
         component: String = ""
     ): String {
         val sb = StringBuilder()
         sb.append("am start")
         if (action.isNotBlank()) sb.append(" -a $action")
-        if (dataUri.isNotBlank()) sb.append(" -d \"$dataUri\"")
-        if (type.isNotBlank()) sb.append(" -t \"$type\"")
+        if (dataUri.isNotBlank()) sb.append(" -d $dataUri")
+        if (type.isNotBlank()) sb.append(" -t $type")
         if (component.isNotBlank()) sb.append(" -n $component")
         else if (packageName.isNotBlank()) sb.append(" $packageName")
         return sb.toString()
