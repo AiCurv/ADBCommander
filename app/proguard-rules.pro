@@ -1,0 +1,3 @@
+-keep class com.flyfishxu.kadb.** { *; }
+-keep class org.conscrypt.** { *; }
+-dontwarn org.conscrypt.**
