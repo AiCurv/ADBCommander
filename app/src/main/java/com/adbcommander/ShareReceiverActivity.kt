@@ -21,7 +21,6 @@ import kotlinx.coroutines.launch
 class ShareReceiverActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        AdbManager.initCert(applicationContext)
 
         val sharedText = intent?.getStringExtra(Intent.EXTRA_TEXT) ?: ""
         val sharedUrl = AdbManager.extractUrl(sharedText) ?: sharedText.ifBlank { null }
@@ -97,7 +96,7 @@ fun ShareDialog(sharedUrl: String, onDismiss: () -> Unit) {
                             isExecuting = false; resultMessage = "TV IP not set. Open app settings first."; resultIsError = true; return@launch
                         }
                         val finalCommand = command.replace("{URL}", sharedUrl)
-                        val result = AdbManager.executeShell(host, port, finalCommand)
+                        val result = AdbManager.executeShell(context, host, port, finalCommand)
                         isExecuting = false
                         if (result.isSuccess) {
                             resultMessage = "Command sent to TV!"; resultIsError = false

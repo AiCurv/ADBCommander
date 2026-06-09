@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "com.adbcommander"
-    compileSdk = 37
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.adbcommander"
@@ -59,15 +59,12 @@ dependencies {
     implementation(libs.androidx.material.icons.extended)
     debugImplementation(libs.androidx.ui.tooling)
 
-    // ADB library - pure Kotlin with wireless pairing support
-    implementation(libs.kadb)
-
-    // TLS 1.3 provider for pairing on Android 7-8 (Android 9+ has built-in TLS 1.3)
-    implementation(libs.conscrypt.android)
+    // ADB library - pure Java/Kotlin, no native binary needed
+    implementation(libs.dadb)
 
     // Coroutines
     implementation(libs.kotlinx.coroutines.android)
 
-    // DataStore for persisting settings (IP, port, command)
+    // DataStore for persisting settings
     implementation(libs.androidx.datastore.preferences)
 }

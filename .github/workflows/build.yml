@@ -19,17 +19,6 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Accept Android SDK licenses and install SDK 37
-        run: |
-          yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          sdkmanager --channel=3 "platforms;android-Baklava" || true
-          sdkmanager "platforms;android-37" || true
-          # List available platforms for debugging
-          sdkmanager --list 2>/dev/null | grep "platforms;android" | head -10
-
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
