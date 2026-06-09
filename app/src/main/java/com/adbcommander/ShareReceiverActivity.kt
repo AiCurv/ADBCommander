@@ -29,18 +29,10 @@ import kotlinx.coroutines.launch
 /**
  * Interactive translucent dialog activity that appears when content is shared
  * to ADB Commander from any app. Supports both URL text and local file sharing.
- *
- * Shows a scrollable pop-up with the shared item info and a vertical listing
- * of ALL available presets. Tapping a preset button executes that command
- * template tailored to the shared item and dismisses the pop-up.
  */
 class ShareReceiverActivity : ComponentActivity() {
-    companion object {
-        private const val TAG = "ShareReceiver"
-    }
 
-    // Shared content data
-    private var sharedContentType: String = "url" // "url" or "file"
+    private var sharedContentType: String = "url"
     private var sharedUrl: String? = null
     private var sharedFileUri: Uri? = null
     private var sharedFileMimeType: String? = null
@@ -98,7 +90,7 @@ class ShareReceiverActivity : ComponentActivity() {
                 val sharedText = intent?.getStringExtra(Intent.EXTRA_TEXT) ?: ""
                 sharedUrl = AdbManager.extractUrl(sharedText) ?: sharedText.ifBlank { null }
                 sharedContentType = if (sharedUrl != null) "url" else "file"
-                Log.d(TAG, "Fallback share — text=$sharedText, url=$sharedUrl")
+                Log.d(TAG, "Fallback share — url=$sharedUrl")
             }
         }
     }
@@ -110,13 +102,12 @@ class ShareReceiverActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        // Clean up any running file servers
         activeFileServer?.stop()
         activeFileServer = null
     }
 
     companion object {
-        // Track the active file server for cleanup
+        private const val TAG = "ShareReceiver"
         var activeFileServer: FileServer? = null
     }
 }
@@ -141,21 +132,16 @@ fun ShareReceiverDialog(
     var statusMessage by remember { mutableStateOf<String?>(null) }
     var isError by remember { mutableStateOf(false) }
 
-    // Auto-execute check
-    var autoExecuteChecked by remember { mutableStateOf(false) }
-    var autoExecuted by remember { mutableStateOf(false) }
-
     LaunchedEffect(Unit) {
-        autoExecuteChecked = settings.getAutoExecute()
-    }
-
-    // Auto-execute with the selected preset
-    LaunchedEffect(autoExecuteChecked) {
-        if (autoExecuteChecked && !autoExecuted && presets.isNotEmpty()) {
+        val autoExecute = settings.getAutoExecute()
+        if (autoExecute && presets.isNotEmpty()) {
             val selectedPresetName = settings.getSelectedPreset()
             val preset = presets.find { it.name == selectedPresetName } ?: presets.first()
-            autoExecuted = true
-            executePreset(
+            isExecuting = true
+            executingPreset = preset.name
+            statusMessage = "Auto-executing: ${preset.name}"
+
+            val result = executePresetSuspend(
                 context = context,
                 settings = settings,
                 preset = preset,
@@ -163,24 +149,19 @@ fun ShareReceiverDialog(
                 sharedUrl = sharedUrl,
                 sharedFileUri = sharedFileUri,
                 sharedFileMimeType = sharedFileMimeType,
-                sharedFileName = sharedFileName,
-                onStatus = { msg, err ->
-                    statusMessage = msg
-                    isError = err
-                },
-                onExecuting = { name ->
-                    isExecuting = true
-                    executingPreset = name
-                },
-                onDone = { success ->
-                    isExecuting = false
-                    executingPreset = null
-                    if (success) {
-                        delay(500)
-                        onDismiss()
-                    }
-                }
+                sharedFileName = sharedFileName
             )
+
+            isExecuting = false
+            executingPreset = null
+            if (result.isSuccess) {
+                Toast.makeText(context, "Command sent!", Toast.LENGTH_SHORT).show()
+                delay(500)
+                onDismiss()
+            } else {
+                statusMessage = "Failed: ${result.exceptionOrNull()?.message}"
+                isError = true
+            }
         }
     }
 
@@ -188,29 +169,20 @@ fun ShareReceiverDialog(
         onDismissRequest = { if (!isExecuting) onDismiss() },
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.Filled.Send,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(24.dp)
-                )
+                Icon(Icons.Filled.Send, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
                 Spacer(Modifier.width(8.dp))
                 Text("Send to TV")
             }
         },
         text = {
             Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
+                modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                // ── Shared item info ──────────────────────────────
+                // Shared item info card
                 Card(
                     modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.secondaryContainer
-                    )
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
                 ) {
                     Column(modifier = Modifier.padding(10.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -241,40 +213,39 @@ fun ShareReceiverDialog(
                     }
                 }
 
-                // ── Status message ───────────────────────────────
+                // Status
                 statusMessage?.let { msg ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         if (isExecuting) {
                             CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                             Spacer(Modifier.width(8.dp))
                         }
-                        Text(
-                            msg,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
-                        )
+                        Text(msg, style = MaterialTheme.typography.bodySmall,
+                            color = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
                     }
                 }
 
                 HorizontalDivider()
 
-                // ── Preset buttons ───────────────────────────────
-                Text(
-                    "Select a preset to execute:",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Text("Select a preset to execute:", style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
 
+                // Preset buttons
                 presets.forEach { preset ->
                     val isCompatible = when (contentType) {
-                        "file" -> true // All presets work with files (either {URL} via HTTP or {FILE} via push)
-                        else -> preset.usesUrl || !preset.usesFile // URL content needs {URL} or no placeholder
+                        "file" -> true
+                        else -> preset.usesUrl || !preset.usesFile
                     }
 
                     OutlinedButton(
                         onClick = {
                             scope.launch {
-                                executePreset(
+                                isExecuting = true
+                                executingPreset = preset.name
+                                statusMessage = "Executing: ${preset.name}"
+                                isError = false
+
+                                val result = executePresetSuspend(
                                     context = context,
                                     settings = settings,
                                     preset = preset,
@@ -282,24 +253,19 @@ fun ShareReceiverDialog(
                                     sharedUrl = sharedUrl,
                                     sharedFileUri = sharedFileUri,
                                     sharedFileMimeType = sharedFileMimeType,
-                                    sharedFileName = sharedFileName,
-                                    onStatus = { msg, err ->
-                                        statusMessage = msg
-                                        isError = err
-                                    },
-                                    onExecuting = { name ->
-                                        isExecuting = true
-                                        executingPreset = name
-                                    },
-                                    onDone = { success ->
-                                        isExecuting = false
-                                        executingPreset = null
-                                        if (success) {
-                                            delay(500)
-                                            onDismiss()
-                                        }
-                                    }
+                                    sharedFileName = sharedFileName
                                 )
+
+                                isExecuting = false
+                                executingPreset = null
+                                if (result.isSuccess) {
+                                    Toast.makeText(context, "Command sent!", Toast.LENGTH_SHORT).show()
+                                    delay(500)
+                                    onDismiss()
+                                } else {
+                                    statusMessage = "Failed: ${result.exceptionOrNull()?.message}"
+                                    isError = true
+                                }
                             }
                         },
                         enabled = !isExecuting && isCompatible,
@@ -332,10 +298,7 @@ fun ShareReceiverDialog(
                             if (preset.command.isNotBlank()) {
                                 Text(
                                     preset.command.take(70) + if (preset.command.length > 70) "..." else "",
-                                    style = MaterialTheme.typography.bodySmall.copy(
-                                        fontFamily = FontFamily.Monospace,
-                                        fontSize = 10.sp
-                                    ),
+                                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontSize = 10.sp),
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
@@ -346,34 +309,27 @@ fun ShareReceiverDialog(
                     }
                 }
 
-                // ── Incompatible hint ────────────────────────────
                 if (contentType == "url") {
                     val fileOnlyPresets = presets.filter { it.usesFile && !it.usesUrl }
                     if (fileOnlyPresets.isNotEmpty()) {
-                        Text(
-                            "Some presets require a local file and are disabled for URL sharing.",
+                        Text("Some presets require a local file and are disabled for URL sharing.",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                        )
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f))
                     }
                 }
             }
         },
         confirmButton = {},
         dismissButton = {
-            TextButton(
-                onClick = onDismiss,
-                enabled = !isExecuting
-            ) { Text("Cancel") }
+            TextButton(onClick = onDismiss, enabled = !isExecuting) { Text("Cancel") }
         }
     )
 }
 
 /**
- * Execute a preset command for the shared content.
- * Handles both URL and file content types.
+ * Execute a preset command — suspend function that can be called from a coroutine.
  */
-private suspend fun executePreset(
+private suspend fun executePresetSuspend(
     context: android.content.Context,
     settings: SettingsManager,
     preset: SettingsManager.Preset,
@@ -381,54 +337,33 @@ private suspend fun executePreset(
     sharedUrl: String?,
     sharedFileUri: Uri?,
     sharedFileMimeType: String?,
-    sharedFileName: String?,
-    onStatus: (String, Boolean) -> Unit,
-    onExecuting: (String) -> Unit,
-    onDone: (Boolean) -> Unit
-) {
+    sharedFileName: String?
+): Result<String> {
     val host = settings.getTvHost()
     val port = settings.getTvPort()
 
     if (host.isBlank()) {
-        onStatus("TV IP not set! Open app settings first.", true)
-        onDone(false)
-        return
+        return Result.failure(IOException("TV IP not set! Open app settings first."))
     }
 
-    onExecuting(preset.name)
-
-    try {
+    return try {
         val finalCommand = when (contentType) {
             "file" -> {
-                // Local file sharing — start HTTP server for streaming
+                val fileUri = sharedFileUri
+                    ?: return Result.failure(IOException("No file to share"))
+
                 if (preset.usesFile && !preset.usesUrl) {
-                    // Preset uses {FILE} — push small file to TV, use local path
-                    val fileUri = sharedFileUri ?: run {
-                        onStatus("No file to push", true)
-                        onDone(false)
-                        return
-                    }
+                    // Preset uses {FILE} — push small file to TV
                     val ext = AdbManager.getExtensionFromMimeType(sharedFileMimeType)
                     val fileName = "adb_commander_share.$ext"
-                    onStatus("Pushing file to TV...", false)
-
                     val pushResult = AdbManager.pushFileSmall(context, host, port, fileUri, fileName)
                     if (pushResult.isFailure) {
-                        onStatus("Push failed: ${pushResult.exceptionOrNull()?.message}", true)
-                        onDone(false)
-                        return
+                        return Result.failure(pushResult.exceptionOrNull() ?: IOException("Push failed"))
                     }
                     val remotePath = pushResult.getOrDefault("")
                     AdbManager.prepareFileCommand(preset.command, remotePath, "")
                 } else {
-                    // Preset uses {URL} — start HTTP server and stream
-                    val fileUri = sharedFileUri ?: run {
-                        onStatus("No file to stream", true)
-                        onDone(false)
-                        return
-                    }
-                    onStatus("Starting file server...", false)
-
+                    // Preset uses {URL} — start HTTP server for streaming
                     val server = FileServer(fileUri, sharedFileMimeType ?: "video/*", context.contentResolver)
                     ShareReceiverActivity.activeFileServer = server
                     val serverPort = server.start()
@@ -436,49 +371,29 @@ private suspend fun executePreset(
 
                     if (phoneIp == null) {
                         server.stop()
-                        onStatus("Cannot get phone IP. Are you on WiFi?", true)
-                        onDone(false)
-                        return
+                        return Result.failure(IOException("Cannot get phone IP. Are you on WiFi?"))
                     }
 
                     val ext = AdbManager.getExtensionFromMimeType(sharedFileMimeType)
                     val httpUrl = "http://$phoneIp:$serverPort/file.$ext"
                     Log.d("ShareReceiver", "HTTP streaming URL: $httpUrl")
-
                     AdbManager.prepareFileCommand(preset.command, "", httpUrl)
                 }
             }
             else -> {
-                // URL sharing — standard {URL} replacement
-                val url = sharedUrl ?: run {
-                    onStatus("No URL to send", true)
-                    onDone(false)
-                    return
-                }
+                val url = sharedUrl
+                    ?: return Result.failure(IOException("No URL to send"))
                 AdbManager.prepareCommand(preset.command, url)
             }
         }
 
         if (finalCommand.isBlank()) {
-            onStatus("Command is empty after substitution", true)
-            onDone(false)
-            return
+            return Result.failure(IOException("Command is empty after substitution"))
         }
 
-        onStatus("Executing: $finalCommand", false)
         Log.d("ShareReceiver", "Final command: $finalCommand")
-
-        val result = AdbManager.executeShell(context, host, port, finalCommand)
-        if (result.isSuccess) {
-            onStatus("Sent to TV!", false)
-            Toast.makeText(context, "Command sent!", Toast.LENGTH_SHORT).show()
-            onDone(true)
-        } else {
-            onStatus("Failed: ${result.exceptionOrNull()?.message}", true)
-            onDone(false)
-        }
+        AdbManager.executeShell(context, host, port, finalCommand)
     } catch (e: Exception) {
-        onStatus("Error: ${e.message}", true)
-        onDone(false)
+        Result.failure(IOException("Execution error: ${e.message}", e))
     }
 }

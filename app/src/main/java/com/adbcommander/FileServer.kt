@@ -12,13 +12,6 @@ import java.net.Socket
 /**
  * Lightweight HTTP file server that streams a local content:// URI
  * so a TV on the same WiFi network can play it directly.
- *
- * Typical flow:
- *   1. Start the server → get the local port
- *   2. Build URL: http://<phone-ip>:<port>/file.<ext>
- *   3. Send ADB shell command to TV to open that URL
- *   4. TV's video player streams from the phone
- *   5. Stop the server after serving or after timeout
  */
 class FileServer(
     private val fileUri: Uri,
@@ -36,10 +29,6 @@ class FileServer(
     private var serverThread: Thread? = null
     private var servedCount = 0
 
-    /**
-     * Start the HTTP server. Pass port=0 to auto-select an available port.
-     * Returns the actual port the server is listening on.
-     */
     fun start(port: Int = 0): Int {
         serverSocket = ServerSocket(port)
         running = true
@@ -47,7 +36,6 @@ class FileServer(
         serverThread = Thread({ serve() }, "FileServer-$localPort")
         serverThread?.start()
 
-        // Auto-stop after timeout
         Thread({
             try { Thread.sleep(SERVE_TIMEOUT_MS) } catch (_: InterruptedException) {}
             if (running) {
@@ -77,12 +65,10 @@ class FileServer(
             val input = socket.getInputStream()
             val output = socket.getOutputStream()
 
-            // Read HTTP request (we only care that it's a GET)
             val headerBuffer = ByteArray(4096)
             input.read(headerBuffer)
             val requestStr = String(headerBuffer)
 
-            // Handle range requests for seeking
             val rangeHeader = extractRange(requestStr)
 
             val fileStream: InputStream? = contentResolver.openInputStream(fileUri)
@@ -98,17 +84,15 @@ class FileServer(
             Log.d(TAG, "Serving file, mimeType=$mimeType, size=$totalSize, range=$rangeHeader")
 
             if (rangeHeader != null && totalSize > 0) {
-                // Partial content response (for seeking in video players)
                 val parts = rangeHeader.split("=")
                 if (parts.size == 2) {
                     val rangeParts = parts[1].split("-")
-                    val start = rangeParts[0].toLongOrNull() ?: 0
-                    val end = if (rangeParts.size > 1 && rangeParts[1].isNotEmpty())
-                        rangeParts[1].toLongOrNull() ?: (totalSize - 1)
+                    val start = rangeParts[0].toLongOrNull() ?: 0L
+                    val end: Long = if (rangeParts.size > 1 && rangeParts[1].isNotEmpty())
+                        rangeParts[1].toLongOrNull() ?: (totalSize - 1).toLong()
                     else
-                        totalSize - 1
+                        (totalSize - 1).toLong()
 
-                    // Skip to start position
                     var skipped = 0L
                     while (skipped < start) {
                         val s = fileStream.skip(start - skipped)
@@ -125,7 +109,6 @@ class FileServer(
                         "Connection: close\r\n" +
                         "Access-Control-Allow-Origin: *\r\n\r\n"
                     output.write(header.toByteArray())
-
                     streamData(fileStream, output, contentLength)
                 } else {
                     sendFullFile(fileStream, output, totalSize)
@@ -144,9 +127,10 @@ class FileServer(
     }
 
     private fun sendFullFile(fileStream: InputStream, output: java.io.OutputStream, totalSize: Int) {
+        val sizeHeader = if (totalSize > 0) "Content-Length: $totalSize\r\n" else ""
         val header = "HTTP/1.1 200 OK\r\n" +
             "Content-Type: $mimeType\r\n" +
-            if (totalSize > 0) "Content-Length: $totalSize\r\n" else "" +
+            sizeHeader +
             "Accept-Ranges: bytes\r\n" +
             "Connection: close\r\n" +
             "Access-Control-Allow-Origin: *\r\n\r\n"
@@ -188,9 +172,6 @@ class FileServer(
 
     fun isRunning(): Boolean = running
 
-    /**
-     * Get the device's WiFi/network IP address (IPv4, non-loopback).
-     */
     fun getLocalIpAddress(): String? {
         try {
             val interfaces = NetworkInterface.getNetworkInterfaces()
