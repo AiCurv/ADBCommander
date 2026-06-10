@@ -512,7 +512,7 @@ fun SettingsTab() {
     var buildPresetName by remember { mutableStateOf("") }
     var buildAction by remember { mutableStateOf("android.intent.action.VIEW") }
     var buildDataUri by remember { mutableStateOf("{URL}") }
-    var buildType by remember { mutableStateOf("video/*") }
+    var buildType by remember { mutableStateOf("{MIME}") }
     var buildComponent by remember { mutableStateOf("") }
 
     // ── Logs state ─────────────────────────────────────────────────────
@@ -570,7 +570,7 @@ fun SettingsTab() {
                     OutlinedTextField(
                         value = buildType,
                         onValueChange = { buildType = it },
-                        label = { Text("MIME Type") },
+                        label = { Text("MIME Type (use {MIME} for dynamic)") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                         textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace)
@@ -768,7 +768,7 @@ fun SettingsTab() {
                                                 buildPresetName = pkg.substringAfterLast(".").replaceFirstChar { it.uppercase() }
                                                 buildAction = "android.intent.action.VIEW"
                                                 buildDataUri = "{URL}"
-                                                buildType = "video/*"
+                                                buildType = "{MIME}"
                                                 buildComponent = ""
                                                 showBuildDialog = true
                                             }
