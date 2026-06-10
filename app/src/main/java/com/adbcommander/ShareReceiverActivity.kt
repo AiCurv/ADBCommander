@@ -23,13 +23,20 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.lifecycleScope
 import com.adbcommander.ui.theme.ADBCommanderTheme
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Interactive translucent dialog activity that appears when content is shared
- * to ADB Commander from any app. Supports both URL text and local file sharing.
+ * to ADB Commander from any app. Supports all content types: URL text, images,
+ * videos, audio, documents, and any other files.
+ *
+ * ContentResolver / URI resolution runs on Dispatchers.IO so the UI thread
+ * is never blocked and the share-sheet transition feels instant.
  */
 class ShareReceiverActivity : ComponentActivity() {
 
@@ -38,32 +45,59 @@ class ShareReceiverActivity : ComponentActivity() {
     private var sharedFileUri: Uri? = null
     private var sharedFileMimeType: String? = null
     private var sharedFileName: String? = null
+    private var isResolving by mutableStateOf(true)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        parseSharedContent()
-
-        if (sharedUrl == null && sharedFileUri == null) {
-            Toast.makeText(this, "No shareable content found", Toast.LENGTH_SHORT).show()
-            finish()
-            return
-        }
-
+        // Show the UI immediately with a loading indicator while we resolve
+        // the shared content on a background thread. This prevents the
+        // share-sheet-to-app transition from freezing the phone.
         setContent {
             ADBCommanderTheme {
-                ShareReceiverDialog(
-                    contentType = sharedContentType,
-                    sharedUrl = sharedUrl,
-                    sharedFileUri = sharedFileUri,
-                    sharedFileMimeType = sharedFileMimeType,
-                    sharedFileName = sharedFileName,
-                    onDismiss = { finish() }
-                )
+                if (isResolving) {
+                    // Lightweight loading screen — no ContentResolver work on main thread
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            CircularProgressIndicator()
+                            Spacer(Modifier.height(12.dp))
+                            Text("Resolving shared content...", style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                } else if (sharedUrl == null && sharedFileUri == null) {
+                    Toast.makeText(this, "No shareable content found", Toast.LENGTH_SHORT).show()
+                    finish()
+                } else {
+                    ShareReceiverDialog(
+                        contentType = sharedContentType,
+                        sharedUrl = sharedUrl,
+                        sharedFileUri = sharedFileUri,
+                        sharedFileMimeType = sharedFileMimeType,
+                        sharedFileName = sharedFileName,
+                        onDismiss = { finish() }
+                    )
+                }
+            }
+        }
+
+        // Resolve the shared intent off the main thread
+        lifecycleScope.launch(Dispatchers.IO) {
+            parseSharedContent()
+
+            withContext(Dispatchers.Main) {
+                isResolving = false
             }
         }
     }
 
+    /**
+     * Parse the incoming share intent. Runs on Dispatchers.IO so that
+     * ContentResolver queries, stream reads, and file-name extraction
+     * never block the main UI thread.
+     */
     private fun parseSharedContent() {
         val action = intent?.action
         val type = intent?.type
@@ -71,12 +105,15 @@ class ShareReceiverActivity : ComponentActivity() {
         Log.d(TAG, "Share received — action=$action, type=$type")
 
         when {
-            // File sharing (video/*, audio/*, etc.)
+            // File sharing (images, video, audio, documents, any non-text MIME)
             type != null && !type.startsWith("text/") -> {
                 sharedContentType = "file"
                 sharedFileMimeType = type
                 sharedFileUri = intent?.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
-                sharedFileName = sharedFileUri?.lastPathSegment ?: "shared_file"
+                // Resolve file name via ContentResolver on IO thread (may query provider)
+                sharedFileName = sharedFileUri?.let { uri ->
+                    resolveFileName(uri)
+                } ?: "shared_file"
                 Log.d(TAG, "File share — uri=$sharedFileUri, mime=$type, name=$sharedFileName")
             }
             // Text sharing (URLs, magnet links)
@@ -93,6 +130,23 @@ class ShareReceiverActivity : ComponentActivity() {
                 sharedContentType = if (sharedUrl != null) "url" else "file"
                 Log.d(TAG, "Fallback share — url=$sharedUrl")
             }
+        }
+    }
+
+    /**
+     * Resolve the display name of a content URI using ContentResolver.
+     * This can involve a database query, so it MUST be called from
+     * Dispatchers.IO to avoid blocking the main thread.
+     */
+    private fun resolveFileName(uri: Uri): String? {
+        return try {
+            contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                if (cursor.moveToFirst() && nameIndex >= 0) cursor.getString(nameIndex) else null
+            } ?: uri.lastPathSegment
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to resolve file name for $uri", e)
+            uri.lastPathSegment
         }
     }
 

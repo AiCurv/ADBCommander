@@ -1,31 +1,31 @@
 # ADB Commander
 
-Android app (Kotlin + Jetpack Compose) that appears in Android's Share menu, lets users define custom ADB shell commands with `{URL}`/`{FILE}` placeholders, connects to Android TV over Wireless ADB, and executes commands directly from the phone — no PC needed.
+Android app (Kotlin + Jetpack Compose) that appears in Android's Share menu for **all file types** — photos, videos, audio, text, documents, and any other files. Users define custom ADB shell commands with `{URL}`, `{MIME}`, and `{FILE}` placeholders, connect to Android TV over Wireless ADB, and execute commands directly from the phone — no PC needed.
 
-## Current Working Build
+## Architecture Overview
 
-**v1.5.0 (versionCode 15)** — This is the last known *working* build. All builds after this (16, 17, 18) introduced regressions and were rolled back. **Start from this codebase.**
-
-## Architecture
+ADB Commander uses a clean manual-connection model. There is no persistent background service, no auto-connect on startup, and noForegroundService that could drain battery or create connection loops. The user enters the TV's IP address, taps "Test Connection" to verify, and then all subsequent command executions use fresh ADB connections that open, run, and close automatically. This simple approach eliminates the stale-socket and auto-reconnect bugs that plagued earlier builds.
 
 ### Core Files
 
 | File | Purpose |
 |------|---------|
-| `AdbManager.kt` | ADB connection management, shell execution, URL extraction, file push. Uses `libadb-android` (`AbsAdbConnectionManager`). Key methods: `executeShell()`, `sanitizeCommand()`, `prepareCommand()`, `extractUrl()` |
-| `MainActivity.kt` | 2-tab UI: Commander tab (TV connection, presets, command editor, RUN COMMAND) + Package Manager tab (scan TV packages, build presets) |
-| `ShareReceiverActivity.kt` | Interactive share dialog — appears when user Shares from another app. Shows preset buttons, auto-execute mode, handles both URL and file sharing |
-| `SettingsManager.kt` | Persists settings via DataStore (host, port, presets, etc.). Has 6 built-in presets + user custom presets via SharedPreferences |
-| `FileServer.kt` | Embedded HTTP server for streaming local `content://` URIs to TV. Supports Range requests for video seeking. Auto-timeout after 10 min |
-| `App.kt` | Installs Conscrypt TLS provider at position 1 |
+| `AdbManager.kt` | ADB connection management, shell execution, URL extraction, file push. Uses `libadb-android` (`AbsAdbConnectionManager`). Key methods: `executeShell()`, `sanitizeCommand()`, `prepareCommand()`, `prepareFileCommand()`, `shellEscape()`, `stripQuotesAroundToken()`, `extractUrl()` |
+| `MainActivity.kt` | 2-tab bottom navigation UI: Connection tab (TV connection, preset selector, command editor, RUN COMMAND, Save Preset) + Settings tab (Package Manager Template Configurator, Execution Logs & History) |
+| `ShareReceiverActivity.kt` | Transparent dialog activity launched from Android's Share sheet. Parses shared content on a background coroutine (`Dispatchers.IO`) so the UI appears instantly. Supports auto-execute and manual preset selection |
+| `SettingsManager.kt` | Persists settings via DataStore (host, port, command, auto-execute, selected preset). Built-in presets ("Universal Default", "SmartTube") + user custom presets via SharedPreferences JSON |
+| `FileServer.kt` | Embedded HTTP server for streaming local `content://` URIs to TV. Supports Range requests for video seeking. Auto-timeout after 10 minutes |
+| `CommandLogStore.kt` | Persistent execution log storage. Records every command with timestamp and success/failure status. Powers the Execution Logs card in the Settings tab |
+| `App.kt` | Installs Conscrypt TLS provider at position 1 for ADB TLS 1.3 support |
 
 ### Key Libraries
 
 - **libadb-android** (`com.github.MuntashirAkon:libadb-android:3.1.1`) — ADB protocol. `AbsAdbConnectionManager.connect()` returns boolean, `openStream("shell:$command")` returns `AdbStream`
-- **Conscrypt** (`org.conscrypt:conscrypt-android:2.5.3`) — TLS 1.3 for ADB pairing
+- **Conscrypt** (`org.conscrypt:conscrypt-android:2.5.3`) — TLS 1.3 for ADB pairing on Android 7-8
 - **BouncyCastle** (`org.bouncycastle:bcprov-jdk15to18:1.81`) — X509V3CertificateGenerator for ADB key management
 - **Jetpack Compose** + Material3 for UI
 - **DataStore Preferences** for settings persistence
+- **Kotlin Coroutines** (`kotlinx.coroutines.android`) for async ADB operations and background content resolution
 
 ### Build Config
 
@@ -33,118 +33,78 @@ Android app (Kotlin + Jetpack Compose) that appears in Android's Share menu, let
 - AGP 8.7.3, Kotlin 2.1.0
 - GitHub Actions CI: `.github/workflows/build.yml` builds debug APK on push
 
-### TV Connection
+## How the Token System Works
 
-- Connects via Wireless ADB on port 5555 (default)
-- TV must be on same WiFi network and already paired (ADB pairing done via Android TV settings)
+ADB Commander uses three placeholder tokens that get replaced at command execution time. The system is designed so that preset templates use **bare, unquoted** placeholders, and `shellEscape()` in `AdbManager.kt` adds proper single-quote escaping at runtime. This prevents the double-quoting bug (`''URL''`) that earlier builds suffered from.
+
+### Bare `{URL}` Token
+
+The `{URL}` placeholder is replaced with the shared URL, wrapped in single quotes via `shellEscape()`. For example, if the user shares `https://site.com/video?id=123&type=mp4`, the shell command becomes:
+
+```
+am start -a android.intent.action.VIEW -d 'https://site.com/video?id=123&type=mp4' -t 'video/*' com.cxinventor.file.explorer
+```
+
+The single quotes prevent `&`, `?`, `=`, and other shell metacharacters from fragmenting the command. The `stripQuotesAroundToken()` function strips any accidental surrounding quotes from the template before substitution, so even if a user manually adds quotes around `{URL}` in the preset, the system corrects it automatically.
+
+### Dynamic `{MIME}` Token
+
+The `{MIME}` placeholder is replaced with the MIME type of the shared content, also shell-escaped. When sharing a video, `{MIME}` becomes `'video/*'`; when sharing an image, it becomes `'image/*'`; for audio, `'audio/*'`. This means a single preset template works across all media types without hardcoding a specific MIME value. The Universal Default preset uses `{MIME}` specifically for this flexibility — the same command can open a video in a file explorer or an image in an image viewer, because the MIME type adapts to whatever was actually shared.
+
+### `{FILE}` Token
+
+The `{FILE}` placeholder is used for local file sharing. Small files (under 2 MB) are base64-pushed to the TV's `/sdcard/Download/` directory, and `{FILE}` is replaced with the `file://` URI of the remote path. Larger files use the embedded HTTP server, where `{URL}` gets the streaming URL instead. This dual approach ensures both small and large files can be handled efficiently.
+
+## Share Sheet — Universal Intent Filters
+
+The app registers a single `<intent-filter>` with `<data android:mimeType="*/*" />` inside `ShareReceiverActivity`. This means ADB Commander appears in the Android share sheet for **every content type**: gallery photos, images, videos, audio files, PDFs, text snippets, APK files, and any other shareable content. Earlier builds used separate filters for `text/plain`, `video/*`, `audio/*`, and `application/*`, which excluded images and other common file types. The universal `*/*` filter ensures the app is always available when the user wants to send something to their TV.
+
+## Background Thread Content Resolution
+
+When the user shares content to ADB Commander from another app, the `ShareReceiverActivity` is launched by Android. The previous implementation ran `ContentResolver.query()`, stream reading, and file name extraction directly on the main UI thread inside `parseSharedContent()`. This caused a noticeable freeze — the phone would hang for a moment during the share-sheet-to-app transition, especially when resolving large content URIs or querying media providers.
+
+The current implementation fixes this by running all content resolution on a background coroutine via `lifecycleScope.launch(Dispatchers.IO)`. The `onCreate()` method immediately calls `setContent {}` with a lightweight loading indicator (a `CircularProgressIndicator` and "Resolving shared content..." text), then launches the parsing coroutine. Once the background work completes, the `isResolving` state variable is set to `false` on the main thread via `withContext(Dispatchers.Main)`, and the full ShareReceiverDialog is rendered. This approach ensures the UI is responsive from the first frame, and the user sees a smooth transition from the share sheet into the app.
+
+The `resolveFileName()` method specifically queries `ContentResolver` for the `OpenableColumns.DISPLAY_NAME` of the shared URI, which can involve a database query to the media provider. By running this on `Dispatchers.IO`, we avoid any risk of an ANR (Application Not Responding) dialog.
+
+## TV Connection Model
+
+- Connects via Wireless ADB on port 5555 (default, configurable)
+- TV must be on the same WiFi network and already paired (ADB pairing done via Android TV settings)
 - `AdbManager.testConnection()` runs `echo ok` to verify connectivity
 - Connection is NOT persistent — each `executeShell()` call does a fresh `connect()` + `openStream()`
+- No foreground service, no auto-connect, no background connection management — simple and reliable
 
-### Share Flow
+## Share Flow
 
-1. User Shares a URL or file from any app → Android launches `ShareReceiverActivity`
-2. Intent is parsed: text/plain = URL, video/audio/application = file
-3. If auto-execute is ON → runs selected preset immediately
-4. If auto-execute is OFF → shows interactive dialog with preset buttons
-5. For files: small files (<2MB) are base64-pushed to TV `/sdcard/Download/`, larger files use HTTP streaming via `FileServer`
+1. User Shares any content from any app (photo, video, link, file) → Android launches `ShareReceiverActivity`
+2. UI appears instantly with a loading spinner while content is resolved on `Dispatchers.IO`
+3. Intent is parsed: `text/*` = URL/text, everything else = file
+4. File names are resolved via `ContentResolver.query()` on the background thread
+5. If auto-execute is ON → runs the selected preset immediately
+6. If auto-execute is OFF → shows interactive dialog with preset buttons
+7. For files: small files (<2 MB) are base64-pushed to TV `/sdcard/Download/`, larger files use HTTP streaming via `FileServer`
 
-## Known Issues (What Needs Fixing)
+## Built-in Presets
 
-These are the bugs/limitations that Builds 16-18 tried to fix but introduced regressions:
+| Preset | Command | Description |
+|--------|---------|-------------|
+| Universal Default | `am start -a android.intent.action.VIEW -d {URL} -t {MIME} com.cxinventor.file.explorer` | Opens any shared content in CX File Explorer. Uses `{MIME}` so it works with videos, images, and audio |
+| SmartTube | `am start -a android.intent.action.VIEW -d {URL} -n org.smarttube.stable/com.liskovsoft.smartyoutubetv2.tv.ui.main.SplashActivity` | Opens YouTube URLs directly in SmartTube Next on the TV |
 
-### 1. Shell Argument Escaping — URLs with `&`, `?`, `=` get fragmented
-
-**Problem**: When a URL like `https://site.com/video?id=123&type=mp4` is inserted into a shell command, the `&` acts as a shell operator, fragmenting the command. The `prepareCommand()` method just does a simple string replacement without escaping.
-
-**What was tried (Build 16)**: Added `shellEscape()` that wraps `{URL}` values in single quotes. BUT the preset templates also had `'{URL}'` with single quotes, creating DOUBLE quoting (`''url''`) which shell interprets as empty string + unquoted URL + empty string — even worse.
-
-**Correct fix**: Add `shellEscape()` that wraps in single quotes, but make sure preset templates use bare `{URL}` (no surrounding quotes). The `shellEscape()` function should be the ONLY source of quoting.
-
-### 2. Background ADB Connection Dies When App is Closed
-
-**Problem**: When user Shares a link and the app is in background, the ADB socket can be killed by Android. The share then fails.
-
-**What was tried (Build 16)**: Added `AdbForegroundService` with a sticky notification. BUT this introduced the auto-connect bug (see #3).
-
-**Correct fix**: Foreground service is the right approach, but it should ONLY be started after a successful manual connection (user taps Test Connection). Do NOT auto-start it.
-
-### 3. Auto-Connect Causes "Ensure TV is Paired" Loop
-
-**Problem**: Build 16 added auto-connect on app startup. When navigating between tabs (Commander ↔ Package Manager), the `LaunchedEffect(Unit)` would re-fire and try to connect again, often failing and showing error messages.
-
-**What was tried (Build 17)**: Added `isConnecting` guard and `isConnectedTo()` check. Still had issues because the underlying socket management in libadb-android doesn't cleanly support "check if connected."
-
-**Correct approach**: Do NOT auto-connect. Keep Build 15's manual-only connection (user taps "Test Connection"). This is simple and reliable.
-
-### 4. URL Extraction Only Supports http/https/magnet
-
-**Problem**: `extractUrl()` only matches `https?://` and `magnet:` schemes. APK download links, FTP URLs, `content://` URIs, etc. are dropped.
-
-**Fix**: Use a universal URI regex that matches any `[a-zA-Z][a-zA-Z0-9+.-]*://` scheme, and fall back to returning the full shared text if no URI is found.
-
-### 5. Hardcoded Presets Bloat
-
-**Problem**: Build 15 has 6 hardcoded presets (Default Video Player, VLC, SmartTube, Stremio, Local File Player, Custom Template). These are specific to apps the user may not have.
-
-**What was tried (Build 16)**: Removed all hardcoded presets, kept only "Vimu Player" as fallback. This was correct.
-
-**Fix**: Keep the dynamic SharedPreferences preset system but reduce hardcoded presets to just the Vimu Player fallback.
-
-## File-by-File Notes for Future AI
-
-### AdbManager.kt
-- `sanitizeCommand()` strips "adb shell" / "adb" prefix — users paste commands with this prefix and `openStream("shell:adb shell ...")` double-prefixes
-- `prepareCommand()` replaces `{URL}` and `YOUR_VIDEO_URL` — both placeholder formats supported for backward compat
-- `AdbConnectionManager` inner class extends `AbsAdbConnectionManager` — handles RSA key generation, self-signed cert via BouncyCastle, key persistence in SharedPreferences
-- The `connect()` call happens INSIDE `executeShell()` — there's no separate connect step. Every command execution does a fresh connect.
-
-### MainActivity.kt
-- `CommanderTab()` composable has all the TV connection UI, preset dropdown, command editor
-- `PackageManagerTab()` composable scans TV packages via `pm list packages -3`
-- Settings loaded via `LaunchedEffect(Unit)` — this is where auto-connect was added in Build 16 (DON'T add it back)
-- `requestBatteryExemption()` prompts user to whitelist app from battery optimization
-
-### ShareReceiverActivity.kt
-- `parseSharedContent()` detects URL vs file from the share intent
-- `ShareReceiverDialog()` composable shows preset buttons
-- `executePresetSuspend()` is the actual execution path — prepares command and calls `AdbManager.executeShell()`
-- Uses `FileServer` for HTTP streaming of local files
-- `activeFileServer` is a static reference to clean up on destroy
-
-### SettingsManager.kt
-- Uses both DataStore (for host, port, command, etc.) and SharedPreferences (for presets JSON)
-- `getAllPresets()` returns built-in presets + custom presets merged
-- `buildPresetFromPackage()` generates an `am start` command from package info
-- Presets are stored as JSON array in SharedPreferences under key `presets_json`
-
-### FileServer.kt
-- Tiny HTTP server using `ServerSocket` — no dependencies
-- Serves a single `content://` URI with Range request support
-- `getLocalIpAddress()` finds the phone's WiFi IP for constructing the TV-accessible URL
-- Auto-stops after 10 minutes of inactivity
-
-## GitHub & CI
-
-- **Repo**: `AiCurv/ADBCommander`
-- **GitHub token**: Check `.env` file or ask user
-- **CI**: `.github/workflows/build.yml` — runs `assembleDebug` on ubuntu-latest + JDK 17
-- **Artifacts**: Debug APK uploaded as `app-debug` artifact, downloadable from Actions tab
-- **Branch**: `main` only
+Users can create additional custom presets via the "Save Preset" button in the Connection tab or the Package Manager Template Configurator in the Settings tab.
 
 ## Version History
 
 | Version | Status | Notes |
 |---------|--------|-------|
-| v1.5.0 (build 15) | ✅ WORKING | Current codebase. Interactive share dialog, dual content, package manager |
-| v1.6.0 (build 16) | ❌ Broken | Added shell escaping (double-quote bug), foreground service, auto-connect (loop bug) |
-| v1.7.0 (build 17) | ❌ Broken | Fixed auto-connect collision, interactive notification, still had double-quote bug |
-| v1.8.0 (build 18) | ❌ Broken | Removed auto-connect, fixed double-quote, but too many changes from working base |
+| v1.6.1 (build 22) | Current | Restored preset selector UI, 2-tab layout, Package Manager + Logs in Settings |
+| v1.6.0 (build 21) | Superseded | 2-tab UI restructure, `stripQuotesAroundToken()`, removed legacy presets |
+| v1.5.0 (build 15) | Legacy | Last build with old 3-tab layout and 6 hardcoded presets |
 
-## Recommended Next Steps
+## GitHub & CI
 
-1. **Fix shell escaping properly**: Add `shellEscape()` to AdbManager, remove quotes from preset templates so there's no double-quoting
-2. **Add foreground service carefully**: Start it ONLY after manual "Test Connection" succeeds. Keep it simple.
-3. **Do NOT add auto-connect**: Build 15's manual connection is reliable. Auto-connect caused more problems than it solved.
-4. **Universal URL extraction**: Expand `extractUrl()` to support any URI scheme
-5. **Reduce hardcoded presets**: Keep Vimu Player as fallback, let users add their own
-6. **Test incrementally**: One fix per build, test on real TV before stacking changes
+- **Repo**: `AiCurv/ADBCommander`
+- **CI**: `.github/workflows/build.yml` — runs `assembleDebug` on ubuntu-latest + JDK 17
+- **Artifacts**: Debug APK uploaded as `app-debug` artifact, downloadable from Actions tab
+- **Branch**: `main` only
