@@ -36,7 +36,7 @@ object AdbManager {
     private const val KEY_PRIVATE = "private_key_b64"
     private const val KEY_CERT = "certificate_b64"
     private const val REMOTE_FILE_DIR = "/sdcard/Download"
-    private const val REMOTE_FILE_NAME = "remote_shared_file.tmp"
+    private const val REMOTE_FILE_NAME = "remote_shared_file.bin"
 
     private var managerInstance: AdbConnectionManager? = null
 
@@ -299,9 +299,11 @@ object AdbManager {
 
     /**
      * Get the file extension from a MIME type.
+     * Falls back to the generic subtype (e.g. "jpeg" from "image/jpeg")
+     * instead of "tmp", so HTTP streaming URLs carry a recognisable extension.
      */
     fun getExtensionFromMimeType(mimeType: String?): String {
-        if (mimeType.isNullOrBlank()) return "tmp"
+        if (mimeType.isNullOrBlank()) return "bin"
         return when {
             mimeType.contains("mp4") -> "mp4"
             mimeType.contains("mkv") -> "mkv"
@@ -312,10 +314,34 @@ object AdbManager {
             mimeType.contains("ogg") -> "ogg"
             mimeType.contains("flac") -> "flac"
             mimeType.contains("wav") -> "wav"
+            mimeType.contains("jpeg") || mimeType.contains("jpg") -> "jpg"
+            mimeType.contains("png") -> "png"
+            mimeType.contains("gif") -> "gif"
+            mimeType.contains("webp") -> "webp"
+            mimeType.contains("bmp") -> "bmp"
+            mimeType.contains("svg") -> "svg"
+            mimeType.contains("pdf") -> "pdf"
             mimeType.contains("audio") -> "mp3"
             mimeType.contains("video") -> "mp4"
-            else -> "tmp"
+            mimeType.contains("image") -> "jpg"
+            else -> {
+                // Fallback: use the subtype part of "type/subtype" (e.g. "jpeg")
+                val subtype = mimeType.substringAfter("/", "").substringBefore(";")
+                if (subtype.isNotBlank() && subtype != "*") subtype else "bin"
+            }
         }
+    }
+
+    /**
+     * Extract the file extension from a filename (e.g. "photo.jpg" → "jpg").
+     * Returns null if the filename has no extension.
+     */
+    fun getExtensionFromFileName(fileName: String?): String? {
+        if (fileName.isNullOrBlank()) return null
+        val lastDot = fileName.lastIndexOf('.')
+        if (lastDot < 0 || lastDot == fileName.length - 1) return null
+        val ext = fileName.substring(lastDot + 1).lowercase()
+        return if (ext.all { it.isLetterOrDigit() }) ext else null
     }
 
     // ── AdbConnectionManager implementation ────────────────────────────

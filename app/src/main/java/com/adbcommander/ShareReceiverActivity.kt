@@ -406,7 +406,8 @@ private suspend fun executePresetSuspend(
 
                 if (preset.usesFile && !preset.usesUrl) {
                     // Preset uses {FILE} — push small file to TV
-                    val ext = AdbManager.getExtensionFromMimeType(sharedFileMimeType)
+                    val ext = AdbManager.getExtensionFromFileName(sharedFileName)
+                        ?: AdbManager.getExtensionFromMimeType(sharedFileMimeType)
                     val fileName = "adb_commander_share.$ext"
                     val pushResult = AdbManager.pushFileSmall(context, host, port, fileUri, fileName)
                     if (pushResult.isFailure) {
@@ -426,7 +427,8 @@ private suspend fun executePresetSuspend(
                         return Result.failure(IOException("Cannot get phone IP. Are you on WiFi?"))
                     }
 
-                    val ext = AdbManager.getExtensionFromMimeType(sharedFileMimeType)
+                    val ext = AdbManager.getExtensionFromFileName(sharedFileName)
+                        ?: AdbManager.getExtensionFromMimeType(sharedFileMimeType)
                     val httpUrl = "http://$phoneIp:$serverPort/file.$ext"
                     Log.d("ShareReceiver", "HTTP streaming URL: $httpUrl")
                     AdbManager.prepareFileCommand(preset.command, "", httpUrl, sharedFileMimeType ?: "video/*")
