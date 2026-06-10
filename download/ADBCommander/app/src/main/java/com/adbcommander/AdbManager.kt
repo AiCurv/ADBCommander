@@ -116,6 +116,28 @@ object AdbManager {
         executeShell(host, port, "echo ok")
 
     // ──────────────────────────────────────────────────────────────────────
+    // Shell escaping — single source of truth
+    // ──────────────────────────────────────────────────────────────────────
+
+    /**
+     * Escape a value for safe inclusion in a POSIX shell command.
+     *
+     * Wraps the value in single quotes. Any embedded single quotes are
+     * handled by ending the quoted string, adding an escaped quote,
+     * and starting a new quoted string: `'` → `'\''`
+     *
+     * **This is the single source of truth for parameter escaping.**
+     * Callers must NOT add their own quoting around values — rely on
+     * this function exclusively to avoid double-quoting bugs like `''value''`.
+     *
+     * Example: `hello world` → `'hello world'`
+     * Example: `it's here` → `'it'\''s here'`
+     */
+    fun shellEscape(value: String): String {
+        return "'" + value.replace("'", "'\\''") + "'"
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
     // URL extraction helper
     // ──────────────────────────────────────────────────────────────────────
 
@@ -136,65 +158,79 @@ object AdbManager {
     // MIME type resolution & command preparation
     // ──────────────────────────────────────────────────────────────────────
 
-    /** Image file extensions that map to "image/*". */
-    private val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp", "gif", "bmp", "svg", "tiff", "tif")
+    /** Image file extensions (with leading dot) for case-insensitive .contains() matching. */
+    private val IMAGE_EXTENSIONS = listOf(
+        ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".svg", ".tiff", ".tif"
+    )
 
-    /** Video file extensions that map to "video/*". */
-    private val VIDEO_EXTENSIONS = setOf("mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "3gp", "ts")
+    /** Video file extensions (with leading dot) for case-insensitive .contains() matching. */
+    private val VIDEO_EXTENSIONS = listOf(
+        ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".3gp", ".ts"
+    )
 
-    /** Audio file extensions that map to "audio/*". */
-    private val AUDIO_EXTENSIONS = setOf("mp3", "wav", "ogg", "flac", "aac", "m4a", "wma", "opus", "mid", "midi")
+    /** Audio file extensions (with leading dot) for case-insensitive .contains() matching. */
+    private val AUDIO_EXTENSIONS = listOf(
+        ".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".wma", ".opus", ".mid", ".midi"
+    )
 
     /**
-     * Resolve a broad MIME type category from a file extension and/or an
-     * incoming MIME type supplied by the sending app.
+     * Resolve a broad MIME type category by inspecting the full URL/path
+     * string and/or the incoming MIME type from the sending app.
      *
      * Resolution order:
-     * 1. If [incomingMimeType] is non-null and not "application/octet-stream"
-     *    or "*/*", derive the category from it (e.g. "image/png" → "image/*").
-     * 2. Otherwise inspect [fileExtension]. Known image/video/audio extensions
-     *    are mapped to their respective wildcard MIME; everything else falls
-     *    back to "*/*".
+     * 1. If [incomingMimeType] is a specific, known media category
+     *    (image/*, video/*, audio/*), derive the wildcard from it.
+     * 2. Otherwise, perform a case-insensitive `.contains()` scan on
+     *    [pathOrUrl]. If any known image/video/audio extension appears
+     *    **anywhere** in the string, return the corresponding wildcard MIME.
+     *    For example, a URL containing ".jpeg" or ".png" strictly maps to
+     *    "image/*".
+     * 3. Fallback to "*/*".
      *
      * @param incomingMimeType  The MIME type from the incoming Intent (may be null).
-     * @param fileExtension     The lower-case file extension without the dot (may be empty).
+     * @param pathOrUrl         The full URL or path string to scan for extensions.
      * @return                  A wildcard MIME type: "image/*", "video/*", "audio/*", or "*/*".
      */
-    fun resolveMimeType(incomingMimeType: String?, fileExtension: String): String {
+    fun resolveMimeType(incomingMimeType: String?, pathOrUrl: String): String {
         // ── Try deriving from the incoming MIME type first ──
         if (!incomingMimeType.isNullOrBlank() &&
             incomingMimeType != "application/octet-stream" &&
             incomingMimeType != "*/*"
         ) {
-            return when {
-                incomingMimeType.startsWith("image/", ignoreCase = true) -> "image/*"
-                incomingMimeType.startsWith("video/", ignoreCase = true) -> "video/*"
-                incomingMimeType.startsWith("audio/", ignoreCase = true) -> "audio/*"
-                else -> {
-                    // The incoming type is specific but not a media category
-                    // (e.g. "text/plain", "application/pdf") — fall through
-                    // to extension-based check.
-                }
+            when {
+                incomingMimeType.startsWith("image/", ignoreCase = true) -> return "image/*"
+                incomingMimeType.startsWith("video/", ignoreCase = true) -> return "video/*"
+                incomingMimeType.startsWith("audio/", ignoreCase = true) -> return "audio/*"
+                // Non-media specific types (text/plain, application/pdf, etc.)
+                // fall through to the .contains() scan below.
             }
         }
 
-        // ── Fall back to file-extension heuristics ──
-        val ext = fileExtension.lowercase()
-        return when {
-            ext in IMAGE_EXTENSIONS -> "image/*"
-            ext in VIDEO_EXTENSIONS -> "video/*"
-            ext in AUDIO_EXTENSIONS -> "audio/*"
-            else -> "*/*"
+        // ── Case-insensitive .contains() scan on the full URL/path ──
+        val lower = pathOrUrl.lowercase()
+        when {
+            IMAGE_EXTENSIONS.any { lower.contains(it) } -> return "image/*"
+            VIDEO_EXTENSIONS.any { lower.contains(it) } -> return "video/*"
+            AUDIO_EXTENSIONS.any { lower.contains(it) } -> return "audio/*"
         }
+
+        return "*/*"
     }
 
     /**
      * Prepare a command for ADB execution by replacing template tokens.
      *
      * Supported tokens:
-     * - `{URL}`  — replaced with the shared URL/text.
-     * - `{MIME}` — replaced with the resolved wildcard MIME type
-     *              (e.g. "video/*", "image/*", "audio/*", "*/*").
+     * - `{URL}`  — replaced with the shell-escaped shared URL/text.
+     * - `{MIME}` — replaced with the shell-escaped resolved MIME type.
+     *
+     * Shell escaping is applied via [shellEscape] as the single source of
+     * truth. The template must NOT include its own quotes around these
+     * tokens — [shellEscape] handles all quoting automatically.
+     *
+     * Correct template:   `am start -a android.intent.action.VIEW -d {URL} -t {MIME}`
+     * Incorrect template: `am start -a android.intent.action.VIEW -d "{URL}" -t "{MIME}"`
+     *                    (would produce double-quoting: `''URL''`)
      *
      * @param template  The raw command template from settings.
      * @param url       The shared URL or text to substitute for {URL}.
@@ -203,7 +239,7 @@ object AdbManager {
      */
     fun prepareCommand(template: String, url: String, mimeType: String): String {
         return template
-            .replace("{URL}", url)
-            .replace("{MIME}", mimeType)
+            .replace("{URL}", shellEscape(url))
+            .replace("{MIME}", shellEscape(mimeType))
     }
 }

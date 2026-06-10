@@ -26,13 +26,14 @@ import kotlinx.coroutines.launch
  *
  * Handles two kinds of shares:
  * - **Text shares** (text/plain, text/x-uri, etc.) — extracts the URL from
- *   [Intent.EXTRA_TEXT] the same way as before.
+ *   [Intent.EXTRA_TEXT].
  * - **File/binary shares** (image/*, video/*, audio/*, application/*, etc.) —
- *   reads the [Intent.EXTRA_STREAM] URI and uses its display name / the
- *   incoming MIME type to resolve a wildcard MIME category via
- *   [AdbManager.resolveMimeType].
+ *   reads the [Intent.EXTRA_STREAM] URI and uses the full path/URI to resolve
+ *   a wildcard MIME category via [AdbManager.resolveMimeType].
  *
  * The resolved MIME is passed into the command template as `{MIME}`.
+ * **No manual quoting is applied** — [AdbManager.shellEscape] is the single
+ * source of truth for parameter escaping, applied inside [AdbManager.prepareCommand].
  */
 class ShareReceiverActivity : ComponentActivity() {
 
@@ -63,16 +64,10 @@ class ShareReceiverActivity : ComponentActivity() {
             // Text share — try to extract a URL, otherwise use raw text
             sharedUrl = AdbManager.extractUrl(sharedText) ?: sharedText
 
-            // For text shares, derive MIME from the intent type or default to */*
-            resolvedMimeType = when {
-                incomingMimeType != null &&
-                incomingMimeType.startsWith("text/", ignoreCase = true) -> {
-                    // Text shares are not media; keep */* unless the user
-                    // explicitly shared a media subtype (unlikely for text).
-                    "*/*"
-                }
-                else -> "*/*"
-            }
+            // For text shares, use the full text/URL for MIME resolution.
+            // This allows URLs like "https://example.com/video.mp4" to be
+            // correctly identified as video/* via .contains() matching.
+            resolvedMimeType = AdbManager.resolveMimeType(incomingMimeType, sharedUrl)
         }
 
         // If no text was found, try EXTRA_STREAM (binary/file share)
@@ -82,12 +77,16 @@ class ShareReceiverActivity : ComponentActivity() {
                 // Use the URI string as the "URL" payload
                 sharedUrl = streamUri.toString()
 
-                // Extract file extension from the display name (if available)
-                val fileExtension = extractFileExtension(streamUri)
-                Log.d(TAG, "Stream URI: $streamUri, ext=$fileExtension, intentType=$incomingMimeType")
+                // Build a combined path for MIME resolution: include both
+                // the URI string and the display name (if available) to
+                // maximise the chance of matching an extension.
+                val displayName = extractDisplayName(streamUri)
+                val combinedPath = "$streamUri $displayName"
 
-                // Resolve the wildcard MIME category
-                resolvedMimeType = AdbManager.resolveMimeType(incomingMimeType, fileExtension)
+                Log.d(TAG, "Stream URI: $streamUri, displayName=$displayName, intentType=$incomingMimeType")
+
+                // Resolve the wildcard MIME category using the full path
+                resolvedMimeType = AdbManager.resolveMimeType(incomingMimeType, combinedPath)
             }
         }
 
@@ -114,23 +113,17 @@ class ShareReceiverActivity : ComponentActivity() {
     }
 
     /**
-     * Extract the file extension from a content URI's display name.
-     * Queries the ContentResolver for [OpenableColumns.DISPLAY_NAME],
-     * then returns everything after the last dot (lower-cased).
-     * Returns an empty string if the extension cannot be determined.
+     * Extract the display name from a content URI.
+     * Queries the ContentResolver for [OpenableColumns.DISPLAY_NAME].
+     * Returns an empty string if the name cannot be determined.
      */
-    private fun extractFileExtension(uri: Uri): String {
-        // Try the ContentResolver first (works for content:// URIs)
+    private fun extractDisplayName(uri: Uri): String {
         if (uri.scheme == "content") {
             try {
                 contentResolver.query(uri, null, null, null, null)?.use { cursor ->
                     val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
                     if (nameIndex >= 0 && cursor.moveToFirst()) {
-                        val displayName = cursor.getString(nameIndex)
-                        val dot = displayName.lastIndexOf('.')
-                        if (dot >= 0 && dot < displayName.length - 1) {
-                            return displayName.substring(dot + 1).lowercase()
-                        }
+                        return cursor.getString(nameIndex)
                     }
                 }
             } catch (e: Exception) {
@@ -138,16 +131,8 @@ class ShareReceiverActivity : ComponentActivity() {
             }
         }
 
-        // Fall back to the URI path (works for file:// URIs)
-        val path = uri.path
-        if (!path.isNullOrBlank()) {
-            val dot = path.lastIndexOf('.')
-            if (dot >= 0 && dot < path.length - 1) {
-                return path.substring(dot + 1).lowercase()
-            }
-        }
-
-        return ""
+        // Fall back to the URI path
+        return uri.path ?: ""
     }
 
     // Prevent re-handling intent on configuration changes
@@ -165,6 +150,7 @@ fun ShareDialog(
 ) {
     val context = LocalContext.current
     val settings = remember { SettingsManager(context) }
+    val logStore = remember { CommandLogStore(context) }
     val scope = rememberCoroutineScope()
 
     var command by remember { mutableStateOf("") }
@@ -172,7 +158,8 @@ fun ShareDialog(
     var resultMessage by remember { mutableStateOf<String?>(null) }
     var resultIsError by remember { mutableStateOf(false) }
 
-    // Load the default command template and replace {URL} & {MIME}
+    // Load the default command template and replace {URL} & {MIME}.
+    // prepareCommand() applies shellEscape() internally — no manual quoting needed.
     LaunchedEffect(sharedUrl, resolvedMimeType) {
         val template = settings.getDefaultCommand()
         command = AdbManager.prepareCommand(template, sharedUrl, resolvedMimeType)
@@ -220,7 +207,7 @@ fun ShareDialog(
                 OutlinedTextField(
                     value = command,
                     onValueChange = { command = it },
-                    placeholder = { Text("am start -a android.intent.action.VIEW -d \"{URL}\" -t \"{MIME}\"") },
+                    placeholder = { Text("am start -a android.intent.action.VIEW -d {URL} -t {MIME}") },
                     minLines = 3,
                     maxLines = 8,
                     modifier = Modifier.fillMaxWidth(),
@@ -265,14 +252,19 @@ fun ShareDialog(
                             return@launch
                         }
 
-                        // Replace {URL} and {MIME} placeholders in case the user
-                        // typed them manually after the initial auto-fill
+                        // Replace any remaining {URL} and {MIME} placeholders
+                        // in case the user typed them manually after the initial auto-fill.
+                        // shellEscape() is applied by prepareCommand() — single source of truth.
                         val finalCommand = AdbManager.prepareCommand(command, sharedUrl, resolvedMimeType)
 
                         val result = AdbManager.executeShell(host, port, finalCommand)
                         isExecuting = false
 
-                        if (result.isSuccess) {
+                        val isSuccess = result.isSuccess
+                        // Record the command in the execution log
+                        logStore.addLog(finalCommand, isSuccess)
+
+                        if (isSuccess) {
                             resultMessage = "Command sent to TV!"
                             resultIsError = false
                             Toast.makeText(context, "Command sent to TV", Toast.LENGTH_SHORT).show()
