@@ -81,14 +81,38 @@ object AdbManager {
     }
 
     /**
+     * Strip any surrounding single or double quotes around a placeholder token
+     * in the template string. This prevents double-quoting when shellEscape()
+     * later wraps the substituted value in single quotes.
+     *
+     * Example: am start -d '{URL}' → am start -d {URL}
+     *          am start -d "{URL}" → am start -d {URL}
+     */
+    private fun stripQuotesAroundToken(template: String, token: String): String {
+        // Match 'token' or "token" (with optional whitespace between quote and token)
+        val singleQuoted = Regex("""'\s*$token\s*'""")
+        val doubleQuoted = Regex(""""\\s*$token\\s*"""")
+        return template
+            .replace(singleQuoted, token)
+            .replace(doubleQuoted, token)
+    }
+
+    /**
      * Replace URL placeholders in a command template with the actual shared URL,
      * safely shell-escaped so metacharacters like &, ?, = don't fragment the command.
      * Supports both {URL} and the literal YOUR_VIDEO_URL as placeholders.
-     * Then sanitizes the result to strip any "adb shell" / "adb" prefixes.
+     *
+     * IMPORTANT: Any surrounding quotes around {URL} or {MIME} in the template
+     * are stripped BEFORE substitution to prevent double-quoting artifacts
+     * like ''url'' being sent to the TV.
      */
     fun prepareCommand(template: String, sharedUrl: String): String {
         val escapedUrl = shellEscape(sharedUrl)
-        var cmd = template
+        // Strip any quotes around placeholders in the template first
+        var cleanTemplate = stripQuotesAroundToken(template, "{URL}")
+        cleanTemplate = stripQuotesAroundToken(cleanTemplate, "{MIME}")
+        cleanTemplate = stripQuotesAroundToken(cleanTemplate, "{FILE}")
+        var cmd = cleanTemplate
             .replace("{URL}", escapedUrl)
             .replace("YOUR_VIDEO_URL", escapedUrl)
         return sanitizeCommand(cmd)
@@ -97,10 +121,16 @@ object AdbManager {
     /**
      * Replace file placeholder {FILE} with the remote file path on the TV,
      * and {URL} with the HTTP streaming URL. Both are properly shell-escaped.
-     * Then sanitizes the result.
+     *
+     * IMPORTANT: Any surrounding quotes around placeholders in the template
+     * are stripped BEFORE substitution to prevent double-quoting artifacts.
      */
     fun prepareFileCommand(template: String, remoteFilePath: String, httpUrl: String): String {
-        var cmd = template
+        // Strip any quotes around placeholders in the template first
+        var cleanTemplate = stripQuotesAroundToken(template, "{URL}")
+        cleanTemplate = stripQuotesAroundToken(cleanTemplate, "{MIME}")
+        cleanTemplate = stripQuotesAroundToken(cleanTemplate, "{FILE}")
+        var cmd = cleanTemplate
         if (remoteFilePath.isNotBlank()) {
             cmd = cmd.replace("{FILE}", shellEscape("file://$remoteFilePath"))
         }

@@ -282,9 +282,6 @@ fun ShareReceiverDialog(
                                 Icon(
                                     when {
                                         preset.usesFile -> Icons.Filled.FolderOpen
-                                        preset.name.contains("VLC", ignoreCase = true) -> Icons.Filled.PlayCircle
-                                        preset.name.contains("SmartTube", ignoreCase = true) -> Icons.Filled.SmartDisplay
-                                        preset.name.contains("Stremio", ignoreCase = true) -> Icons.Filled.Movie
                                         else -> Icons.AutoMirrored.Filled.Send
                                     },
                                     contentDescription = null,
@@ -393,7 +390,11 @@ private suspend fun executePresetSuspend(
         }
 
         Log.d("ShareReceiver", "Final command: $finalCommand")
-        AdbManager.executeShell(context, host, port, finalCommand)
+        val result = AdbManager.executeShell(context, host, port, finalCommand)
+        // Log the execution to persistent history
+        val logStore = CommandLogStore(context)
+        logStore.addLog(finalCommand, result.isSuccess)
+        result
     } catch (e: Exception) {
         Result.failure(IOException("Execution error: ${e.message}", e))
     }
