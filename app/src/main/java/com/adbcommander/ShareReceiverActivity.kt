@@ -399,6 +399,11 @@ private suspend fun executePresetSuspend(
     }
 
     return try {
+        // Resolve the true MIME type from the intent + filename.
+        // Never falls back to "video/*" — images get image/*, etc.
+        val resolvedMime = AdbManager.resolveMimeType(sharedFileMimeType, sharedFileName)
+        Log.d("ShareReceiver", "Resolved MIME: intent=$sharedFileMimeType, fileName=$sharedFileName → $resolvedMime")
+
         val finalCommand = when (contentType) {
             "file" -> {
                 val fileUri = sharedFileUri
@@ -407,17 +412,17 @@ private suspend fun executePresetSuspend(
                 if (preset.usesFile && !preset.usesUrl) {
                     // Preset uses {FILE} — push small file to TV
                     val ext = AdbManager.getExtensionFromFileName(sharedFileName)
-                        ?: AdbManager.getExtensionFromMimeType(sharedFileMimeType)
+                        ?: AdbManager.getExtensionFromMimeType(resolvedMime)
                     val fileName = "adb_commander_share.$ext"
                     val pushResult = AdbManager.pushFileSmall(context, host, port, fileUri, fileName)
                     if (pushResult.isFailure) {
                         return Result.failure(pushResult.exceptionOrNull() ?: IOException("Push failed"))
                     }
                     val remotePath = pushResult.getOrDefault("")
-                    AdbManager.prepareFileCommand(preset.command, remotePath, "", sharedFileMimeType ?: "video/*")
+                    AdbManager.prepareFileCommand(preset.command, remotePath, "", resolvedMime)
                 } else {
                     // Preset uses {URL} — start HTTP server for streaming
-                    val server = FileServer(fileUri, sharedFileMimeType ?: "video/*", context.contentResolver)
+                    val server = FileServer(fileUri, resolvedMime, context.contentResolver)
                     ShareReceiverActivity.activeFileServer = server
                     val serverPort = server.start()
                     val phoneIp = server.getLocalIpAddress()
@@ -428,16 +433,16 @@ private suspend fun executePresetSuspend(
                     }
 
                     val ext = AdbManager.getExtensionFromFileName(sharedFileName)
-                        ?: AdbManager.getExtensionFromMimeType(sharedFileMimeType)
+                        ?: AdbManager.getExtensionFromMimeType(resolvedMime)
                     val httpUrl = "http://$phoneIp:$serverPort/file.$ext"
                     Log.d("ShareReceiver", "HTTP streaming URL: $httpUrl")
-                    AdbManager.prepareFileCommand(preset.command, "", httpUrl, sharedFileMimeType ?: "video/*")
+                    AdbManager.prepareFileCommand(preset.command, "", httpUrl, resolvedMime)
                 }
             }
             else -> {
                 val url = sharedUrl
                     ?: return Result.failure(IOException("No URL to send"))
-                AdbManager.prepareCommand(preset.command, url, sharedFileMimeType ?: "video/*")
+                AdbManager.prepareCommand(preset.command, url, resolvedMime)
             }
         }
 

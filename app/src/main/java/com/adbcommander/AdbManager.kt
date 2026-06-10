@@ -108,7 +108,7 @@ object AdbManager {
      * are stripped BEFORE substitution to prevent double-quoting artifacts
      * like ''url'' being sent to the TV.
      */
-    fun prepareCommand(template: String, sharedUrl: String, mimeType: String = "video/*"): String {
+    fun prepareCommand(template: String, sharedUrl: String, mimeType: String): String {
         val escapedUrl = shellEscape(sharedUrl)
         val escapedMime = shellEscape(mimeType)
         // Strip any quotes around placeholders in the template first
@@ -129,7 +129,7 @@ object AdbManager {
      * IMPORTANT: Any surrounding quotes around placeholders in the template
      * are stripped BEFORE substitution to prevent double-quoting artifacts.
      */
-    fun prepareFileCommand(template: String, remoteFilePath: String, httpUrl: String, mimeType: String = "video/*"): String {
+    fun prepareFileCommand(template: String, remoteFilePath: String, httpUrl: String, mimeType: String): String {
         // Strip any quotes around placeholders in the template first
         var cleanTemplate = stripQuotesAroundToken(template, "{URL}")
         cleanTemplate = stripQuotesAroundToken(cleanTemplate, "{MIME}")
@@ -342,6 +342,73 @@ object AdbManager {
         if (lastDot < 0 || lastDot == fileName.length - 1) return null
         val ext = fileName.substring(lastDot + 1).lowercase()
         return if (ext.all { it.isLetterOrDigit() }) ext else null
+    }
+
+    /**
+     * Derive a MIME type from a file extension.
+     * Used to resolve the true content type when the share intent
+     * provides a generic MIME (like application/octet-stream) but
+     * the filename reveals the actual format.
+     */
+    fun getMimeTypeFromExtension(extension: String?): String? {
+        if (extension.isNullOrBlank()) return null
+        return when (extension.lowercase()) {
+            // Video
+            "mp4" -> "video/mp4"
+            "mkv" -> "video/x-matroska"
+            "avi" -> "video/x-msvideo"
+            "webm" -> "video/webm"
+            "m4v" -> "video/mp4"
+            "3gp" -> "video/3gpp"
+            "ts" -> "video/mp2t"
+            // Audio
+            "mp3" -> "audio/mpeg"
+            "wav" -> "audio/wav"
+            "ogg" -> "audio/ogg"
+            "flac" -> "audio/flac"
+            "aac" -> "audio/aac"
+            "m4a" -> "audio/mp4"
+            // Image
+            "jpg", "jpeg" -> "image/jpeg"
+            "png" -> "image/png"
+            "gif" -> "image/gif"
+            "webp" -> "image/webp"
+            "bmp" -> "image/bmp"
+            "svg" -> "image/svg+xml"
+            "heic", "heif" -> "image/heic"
+            // Document
+            "pdf" -> "application/pdf"
+            "html", "htm" -> "text/html"
+            "txt" -> "text/plain"
+            "json" -> "application/json"
+            "xml" -> "application/xml"
+            else -> null
+        }
+    }
+
+    /**
+     * Resolve the most accurate MIME type from available information.
+     * Priority: provided MIME type (if specific) > filename-derived > fallback.
+     * Filters out generic MIME types (application/octet-stream, wildcard) that
+     * carry no useful type information.
+     */
+    fun resolveMimeType(intentMimeType: String?, fileName: String?): String {
+        // If the intent provided a specific, non-generic MIME type, trust it
+        if (!intentMimeType.isNullOrBlank()
+            && intentMimeType != "*/*"
+            && intentMimeType != "application/octet-stream"
+            && intentMimeType != "application/stream"
+        ) {
+            return intentMimeType
+        }
+        // Try deriving from the file extension
+        val ext = getExtensionFromFileName(fileName)
+        if (ext != null) {
+            val fromExt = getMimeTypeFromExtension(ext)
+            if (fromExt != null) return fromExt
+        }
+        // Last resort: generic wildcard
+        return "*/*"
     }
 
     // ── AdbConnectionManager implementation ────────────────────────────
