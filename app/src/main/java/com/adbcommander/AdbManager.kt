@@ -87,14 +87,16 @@ object AdbManager {
      *
      * Example: am start -d '{URL}' → am start -d {URL}
      *          am start -d "{URL}" → am start -d {URL}
+     *
+     * Uses plain String.replace() instead of Regex because tokens contain
+     * curly braces ({URL}, {MIME}, {FILE}) which are regex quantifier
+     * metacharacters and would throw PatternSyntaxException if passed
+     * to Regex unescaped.
      */
     private fun stripQuotesAroundToken(template: String, token: String): String {
-        // Match 'token' or "token" (with optional whitespace between quote and token)
-        val singleQuoted = Regex("""'\s*$token\s*'""")
-        val doubleQuoted = Regex(""""\\s*$token\\s*"""")
         return template
-            .replace(singleQuoted, token)
-            .replace(doubleQuoted, token)
+            .replace("'$token'", token)
+            .replace("\"$token\"", token)
     }
 
     /**
