@@ -43,7 +43,9 @@ class SettingsManager(private val context: Context) {
         // stripQuotesAroundToken() strips any accidental quotes before escaping.
         val BUILT_IN_PRESETS = listOf(
             Preset("Universal Default", """am start -a android.intent.action.VIEW -d {URL} -t {MIME} com.cxinventor.file.explorer"""),
-            Preset("SmartTube", """am start -a android.intent.action.VIEW -d {URL} -n org.smarttube.stable/com.liskovsoft.smartyoutubetv2.tv.ui.main.SplashActivity""")
+            Preset("SmartTube", """am start -a android.intent.action.VIEW -d {URL} -n org.smarttube.stable/com.liskovsoft.smartyoutubetv2.tv.ui.main.SplashActivity"""),
+            Preset("Send to TV Downloads", """am start -a android.intent.action.VIEW -d {URL} -t application/octet-stream"""),
+            Preset("APK Installer", """am start -a android.intent.action.VIEW -d {URL} -t application/vnd.android.package-archive com.google.android.packageinstaller""")
         )
     }
 
@@ -176,5 +178,47 @@ class SettingsManager(private val context: Context) {
             arr.put(obj)
         }
         presetsPrefs.edit().putString(KEY_PRESETS_JSON, arr.toString()).apply()
+    }
+
+    /**
+     * Serialize all custom presets to a JSON string for export/backup.
+     * Format: {"presets": [{"name": "...", "command": "..."}]}
+     */
+    fun exportPresetsJson(): String {
+        val presets = loadCustomPresets()
+        val arr = JSONArray()
+        presets.forEach { p ->
+            val obj = JSONObject()
+            obj.put("name", p.name)
+            obj.put("command", p.command)
+            arr.put(obj)
+        }
+        val root = JSONObject()
+        root.put("presets", arr)
+        return root.toString(2)
+    }
+
+    /**
+     * Parse a JSON string and import presets. Returns the count of presets imported.
+     * Format: {"presets": [{"name": "...", "command": "..."}]}
+     * Skips presets that conflict with built-in names.
+     */
+    fun importPresetsJson(json: String): Int {
+        return try {
+            val root = JSONObject(json)
+            val arr = root.getJSONArray("presets")
+            var count = 0
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                val name = obj.getString("name")
+                val command = obj.getString("command")
+                if (saveCustomPreset(name, command)) {
+                    count++
+                }
+            }
+            count
+        } catch (e: Exception) {
+            -1
+        }
     }
 }

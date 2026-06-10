@@ -1,15 +1,18 @@
 package com.adbcommander
 
 import android.content.Intent
+import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
+import android.widget.ImageView
 import android.widget.Toast
 import java.io.IOException
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
@@ -18,11 +21,13 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.lifecycleScope
 import com.adbcommander.ui.theme.ADBCommanderTheme
 import kotlinx.coroutines.Dispatchers
@@ -292,6 +297,24 @@ fun ShareReceiverDialog(
                         else -> preset.usesUrl || !preset.usesFile
                     }
 
+                    // Try to extract package name from command for app icon
+                    val context = LocalContext.current
+                    val appIcon: Drawable? = remember(preset.command) {
+                        try {
+                            // Extract potential package name from command (last dotted identifier)
+                            val packagePattern = Regex("""(?:^|\s)([a-z][a-z0-9]*(\.[a-z][a-z0-9]*)+)""")
+                            val match = packagePattern.findAll(preset.command).lastOrNull()
+                            val pkg = match?.groupValues?.get(1)
+                            if (pkg != null) {
+                                context.packageManager.getApplicationIcon(pkg)
+                            } else {
+                                null
+                            }
+                        } catch (_: Exception) {
+                            null
+                        }
+                    }
+
                     OutlinedButton(
                         onClick = {
                             scope.launch {
@@ -333,14 +356,29 @@ fun ShareReceiverDialog(
                     ) {
                         Column(modifier = Modifier.fillMaxWidth()) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    when {
-                                        preset.usesFile -> Icons.Filled.FolderOpen
-                                        else -> Icons.AutoMirrored.Filled.Send
-                                    },
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp)
-                                )
+                                // App icon (24.dp circular, matching icon size context)
+                                if (appIcon != null) {
+                                    AndroidView(
+                                        factory = { ctx ->
+                                            ImageView(ctx).apply {
+                                                setImageDrawable(appIcon)
+                                                scaleType = ImageView.ScaleType.CENTER_CROP
+                                            }
+                                        },
+                                        modifier = Modifier
+                                            .size(18.dp)
+                                            .clip(CircleShape)
+                                    )
+                                } else {
+                                    Icon(
+                                        when {
+                                            preset.usesFile -> Icons.Filled.FolderOpen
+                                            else -> Icons.AutoMirrored.Filled.Send
+                                        },
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
                                 Spacer(Modifier.width(8.dp))
                                 Text(
                                     if (executingPreset == preset.name) "Running..." else preset.name,
