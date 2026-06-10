@@ -29,7 +29,7 @@ class SettingsManager(private val context: Context) {
 
         const val DEFAULT_TV_HOST = ""
         const val DEFAULT_TV_PORT = 5555
-        const val DEFAULT_COMMAND = """am start -a android.intent.action.VIEW -d {URL} -t video/* net.gtvbox.videoplayer"""
+        const val DEFAULT_COMMAND = """am start -a android.intent.action.VIEW -d {URL} -t {MIME} com.cxinventor.file.explorer"""
         const val DEFAULT_AUTO_EXECUTE = false
         const val CONTENT_TYPE_URL = "url"
         const val CONTENT_TYPE_FILE = "file"
@@ -38,12 +38,12 @@ class SettingsManager(private val context: Context) {
         private const val PRESETS_PREFS_NAME = "adb_commander_presets"
         private const val KEY_PRESETS_JSON = "presets_json"
 
-        // Solitary universal default — bare {URL} placeholder, NO surrounding quotes.
+        // Built-in presets — bare {URL}/{MIME}/{FILE} placeholders, NO surrounding quotes.
         // shellEscape() in AdbManager adds single quotes at runtime.
-        // All legacy player-specific presets (VLC, Stremio, SmartTube, etc.)
-        // have been removed. Users build their own via Package Manager.
+        // stripQuotesAroundToken() strips any accidental quotes before escaping.
         val BUILT_IN_PRESETS = listOf(
-            Preset("Universal Command", DEFAULT_COMMAND)
+            Preset("Universal Default", """am start -a android.intent.action.VIEW -d {URL} -t {MIME} com.cxinventor.file.explorer"""),
+            Preset("SmartTube", """am start -a android.intent.action.VIEW -d {URL} -n org.smarttube.stable/com.liskovsoft.smartyoutubetv2.tv.ui.main.SplashActivity""")
         )
     }
 
@@ -61,7 +61,7 @@ class SettingsManager(private val context: Context) {
     val tvPort = context.dataStore.data.map { it[KEY_TV_PORT] ?: DEFAULT_TV_PORT }
     val defaultCommand = context.dataStore.data.map { it[KEY_DEFAULT_COMMAND] ?: DEFAULT_COMMAND }
     val autoExecute = context.dataStore.data.map { it[KEY_AUTO_EXECUTE] ?: DEFAULT_AUTO_EXECUTE }
-    val selectedPreset = context.dataStore.data.map { it[KEY_SELECTED_PRESET] ?: "Universal Command" }
+    val selectedPreset = context.dataStore.data.map { it[KEY_SELECTED_PRESET] ?: "Universal Default" }
     val contentType = context.dataStore.data.map { it[KEY_CONTENT_TYPE] ?: CONTENT_TYPE_URL }
 
     suspend fun getTvHost(): String = tvHost.first()

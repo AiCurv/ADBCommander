@@ -106,14 +106,16 @@ object AdbManager {
      * are stripped BEFORE substitution to prevent double-quoting artifacts
      * like ''url'' being sent to the TV.
      */
-    fun prepareCommand(template: String, sharedUrl: String): String {
+    fun prepareCommand(template: String, sharedUrl: String, mimeType: String = "video/*"): String {
         val escapedUrl = shellEscape(sharedUrl)
+        val escapedMime = shellEscape(mimeType)
         // Strip any quotes around placeholders in the template first
         var cleanTemplate = stripQuotesAroundToken(template, "{URL}")
         cleanTemplate = stripQuotesAroundToken(cleanTemplate, "{MIME}")
         cleanTemplate = stripQuotesAroundToken(cleanTemplate, "{FILE}")
         var cmd = cleanTemplate
             .replace("{URL}", escapedUrl)
+            .replace("{MIME}", escapedMime)
             .replace("YOUR_VIDEO_URL", escapedUrl)
         return sanitizeCommand(cmd)
     }
@@ -125,12 +127,14 @@ object AdbManager {
      * IMPORTANT: Any surrounding quotes around placeholders in the template
      * are stripped BEFORE substitution to prevent double-quoting artifacts.
      */
-    fun prepareFileCommand(template: String, remoteFilePath: String, httpUrl: String): String {
+    fun prepareFileCommand(template: String, remoteFilePath: String, httpUrl: String, mimeType: String = "video/*"): String {
         // Strip any quotes around placeholders in the template first
         var cleanTemplate = stripQuotesAroundToken(template, "{URL}")
         cleanTemplate = stripQuotesAroundToken(cleanTemplate, "{MIME}")
         cleanTemplate = stripQuotesAroundToken(cleanTemplate, "{FILE}")
+        val escapedMime = shellEscape(mimeType)
         var cmd = cleanTemplate
+            .replace("{MIME}", escapedMime)
         if (remoteFilePath.isNotBlank()) {
             cmd = cmd.replace("{FILE}", shellEscape("file://$remoteFilePath"))
         }

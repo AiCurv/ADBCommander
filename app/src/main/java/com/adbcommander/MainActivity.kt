@@ -114,7 +114,7 @@ fun MainScreen() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  CONNECTION TAB — TV Connection + Command + Run
+//  CONNECTION TAB — TV Connection + Presets + Command + Run
 // ═══════════════════════════════════════════════════════════════════════
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -135,12 +135,102 @@ fun ConnectionTab() {
     var runOutput by remember { mutableStateOf<String?>(null) }
     var isRunning by remember { mutableStateOf(false) }
 
+    // Preset state
+    var presets by remember { mutableStateOf(settings.getAllPresets()) }
+    var selectedPresetName by remember { mutableStateOf("Universal Default") }
+    var presetExpanded by remember { mutableStateOf(false) }
+
+    var showSaveDialog by remember { mutableStateOf(false) }
+    var newPresetName by remember { mutableStateOf("") }
+
+    var showDeleteDialog by remember { mutableStateOf(false) }
+    var presetToDelete by remember { mutableStateOf<String?>(null) }
+
     LaunchedEffect(Unit) {
         tvHost = settings.getTvHost()
         tvPort = settings.getTvPort()
         customCommand = settings.getDefaultCommand()
         autoExecute = settings.getAutoExecute()
+        selectedPresetName = settings.getSelectedPreset()
         contentType = settings.getContentType()
+    }
+
+    // ── Save Preset Dialog ───────────────────────────────────────────
+    if (showSaveDialog) {
+        AlertDialog(
+            onDismissRequest = { showSaveDialog = false; newPresetName = "" },
+            title = { Text("Save as Preset") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = newPresetName,
+                        onValueChange = { newPresetName = it },
+                        label = { Text("Preset name") },
+                        placeholder = { Text("My Custom Command") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        "Will save the current shell command:",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        customCommand.take(100) + if (customCommand.length > 100) "..." else "",
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (newPresetName.isNotBlank() && customCommand.isNotBlank()) {
+                        val saved = settings.saveCustomPreset(newPresetName.trim(), customCommand)
+                        if (saved) {
+                            presets = settings.getAllPresets()
+                            selectedPresetName = newPresetName.trim()
+                            scope.launch { settings.setSelectedPreset(selectedPresetName) }
+                            Toast.makeText(context, "Preset saved!", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(context, "Name conflicts with built-in preset", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    showSaveDialog = false; newPresetName = ""
+                }) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSaveDialog = false; newPresetName = "" }) { Text("Cancel") }
+            }
+        )
+    }
+
+    if (showDeleteDialog && presetToDelete != null) {
+        AlertDialog(
+            onDismissRequest = { showDeleteDialog = false; presetToDelete = null },
+            title = { Text("Delete Preset") },
+            text = { Text("Delete preset \"${presetToDelete}\"?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    settings.deleteCustomPreset(presetToDelete!!)
+                    presets = settings.getAllPresets()
+                    if (selectedPresetName == presetToDelete) {
+                        selectedPresetName = "Universal Default"
+                        customCommand = settings.getPresetCommand("Universal Default") ?: SettingsManager.DEFAULT_COMMAND
+                        scope.launch {
+                            settings.setSelectedPreset(selectedPresetName)
+                            settings.setDefaultCommand(customCommand)
+                        }
+                    }
+                    showDeleteDialog = false; presetToDelete = null
+                    Toast.makeText(context, "Preset deleted", Toast.LENGTH_SHORT).show()
+                }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteDialog = false; presetToDelete = null }) { Text("Cancel") }
+            }
+        )
     }
 
     Column(
@@ -236,12 +326,82 @@ fun ConnectionTab() {
             )
         }
 
+        // ═══ Command Presets ═══════════════════════════════════════════
+        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+        SectionHeader("Command Presets", Icons.Filled.List)
+
+        ExposedDropdownMenuBox(
+            expanded = presetExpanded,
+            onExpandedChange = { presetExpanded = !presetExpanded }
+        ) {
+            OutlinedTextField(
+                value = selectedPresetName,
+                onValueChange = {},
+                readOnly = true,
+                label = { Text("Select Preset") },
+                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = presetExpanded) },
+                modifier = Modifier.fillMaxWidth().menuAnchor()
+            )
+
+            ExposedDropdownMenu(
+                expanded = presetExpanded,
+                onDismissRequest = { presetExpanded = false }
+            ) {
+                presets.forEach { preset ->
+                    DropdownMenuItem(
+                        text = {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(preset.name, style = MaterialTheme.typography.bodyLarge)
+                                    if (preset.command.isNotBlank()) {
+                                        Text(
+                                            preset.command.take(60) + if (preset.command.length > 60) "..." else "",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            fontFamily = FontFamily.Monospace,
+                                            maxLines = 1
+                                        )
+                                    } else {
+                                        Text("Blank template", style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f))
+                                    }
+                                }
+                                val isBuiltIn = SettingsManager.BUILT_IN_PRESETS.any { it.name == preset.name }
+                                if (!isBuiltIn) {
+                                    IconButton(onClick = { presetToDelete = preset.name; showDeleteDialog = true }) {
+                                        Icon(Icons.Filled.Delete, contentDescription = "Delete",
+                                            tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(20.dp))
+                                    }
+                                }
+                            }
+                        },
+                        onClick = {
+                            selectedPresetName = preset.name
+                            customCommand = preset.command
+                            scope.launch { settings.setSelectedPreset(preset.name); settings.setDefaultCommand(preset.command) }
+                            presetExpanded = false
+                        }
+                    )
+                }
+            }
+        }
+
+        OutlinedButton(
+            onClick = { showSaveDialog = true },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = customCommand.isNotBlank()
+        ) {
+            Icon(Icons.Filled.Save, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("SAVE CURRENT AS PRESET")
+        }
+
         // ═══ Shell Command ════════════════════════════════════════════
         HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
         SectionHeader("Shell Command", Icons.Filled.Terminal)
 
         Text(
-            "Use bare {URL} for shared links, {FILE} for local files — NO quotes around placeholders. \"adb shell\" prefix stripped. URLs are shell-escaped automatically.",
+            "Use bare {URL} for shared links, {FILE} for local files, {MIME} for content type — NO quotes around placeholders. \"adb shell\" prefix stripped. URLs are shell-escaped automatically.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -250,6 +410,9 @@ fun ConnectionTab() {
             value = customCommand,
             onValueChange = {
                 customCommand = it
+                val matchingPreset = presets.find { p -> p.command == it }
+                if (matchingPreset == null) selectedPresetName = "Custom"
+                else selectedPresetName = matchingPreset.name
                 scope.launch { settings.setDefaultCommand(it) }
             },
             label = { Text("Shell Command") },
@@ -270,14 +433,12 @@ fun ConnectionTab() {
                     if (result.isSuccess) {
                         val output = result.getOrDefault("")
                         runOutput = "OK: $output"
-                        // Log the command execution
                         val logStore = CommandLogStore(context)
                         logStore.addLog(customCommand, true)
                         Toast.makeText(context, output, Toast.LENGTH_SHORT).show()
                     } else {
                         val err = result.exceptionOrNull()?.message ?: "Unknown error"
                         runOutput = "FAIL: $err"
-                        // Log the failed command execution
                         val logStore = CommandLogStore(context)
                         logStore.addLog(customCommand, false)
                         Toast.makeText(context, err, Toast.LENGTH_LONG).show()
@@ -354,79 +515,12 @@ fun SettingsTab() {
     var buildType by remember { mutableStateOf("video/*") }
     var buildComponent by remember { mutableStateOf("") }
 
-    // Save preset dialog
-    var showSaveDialog by remember { mutableStateOf(false) }
-    var newPresetName by remember { mutableStateOf("") }
-
-    // Custom presets list
-    var customPresets by remember { mutableStateOf(settings.getAllPresets()) }
-
-    // Delete dialog
-    var showDeleteDialog by remember { mutableStateOf(false) }
-    var presetToDelete by remember { mutableStateOf<String?>(null) }
-
     // ── Logs state ─────────────────────────────────────────────────────
     var logs by remember { mutableStateOf(logStore.getLogs()) }
 
     // Refresh logs when tab becomes visible
     LaunchedEffect(Unit) {
         logs = logStore.getLogs()
-    }
-
-    // ── Save Preset Dialog ───────────────────────────────────────────
-    if (showSaveDialog) {
-        AlertDialog(
-            onDismissRequest = { showSaveDialog = false; newPresetName = "" },
-            title = { Text("Save as Preset") },
-            text = {
-                OutlinedTextField(
-                    value = newPresetName,
-                    onValueChange = { newPresetName = it },
-                    label = { Text("Preset name") },
-                    placeholder = { Text("My Custom Command") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    val currentCommand = settings.getPresetCommand("Universal Command") ?: SettingsManager.DEFAULT_COMMAND
-                    if (newPresetName.isNotBlank() && currentCommand.isNotBlank()) {
-                        val saved = settings.saveCustomPreset(newPresetName.trim(), currentCommand)
-                        if (saved) {
-                            customPresets = settings.getAllPresets()
-                            Toast.makeText(context, "Preset saved!", Toast.LENGTH_SHORT).show()
-                        } else {
-                            Toast.makeText(context, "Name conflicts with built-in preset", Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                    showSaveDialog = false; newPresetName = ""
-                }) { Text("Save") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showSaveDialog = false; newPresetName = "" }) { Text("Cancel") }
-            }
-        )
-    }
-
-    // ── Delete Preset Dialog ─────────────────────────────────────────
-    if (showDeleteDialog && presetToDelete != null) {
-        AlertDialog(
-            onDismissRequest = { showDeleteDialog = false; presetToDelete = null },
-            title = { Text("Delete Preset") },
-            text = { Text("Delete preset \"${presetToDelete}\"?") },
-            confirmButton = {
-                TextButton(onClick = {
-                    settings.deleteCustomPreset(presetToDelete!!)
-                    customPresets = settings.getAllPresets()
-                    showDeleteDialog = false; presetToDelete = null
-                    Toast.makeText(context, "Preset deleted", Toast.LENGTH_SHORT).show()
-                }) { Text("Delete") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDeleteDialog = false; presetToDelete = null }) { Text("Cancel") }
-            }
-        )
     }
 
     // ── Build Preset Dialog ─────────────────────────────────────────
@@ -511,8 +605,7 @@ fun SettingsTab() {
                     val name = buildPresetName.ifBlank { buildPresetPackage.substringAfterLast(".") }
                     val saved = settings.saveCustomPreset(name, cmd)
                     if (saved) {
-                        customPresets = settings.getAllPresets()
-                        Toast.makeText(context, "Preset \"$name\" saved!", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "Preset \"$name\" saved! Select it in the Connection tab.", Toast.LENGTH_SHORT).show()
                     } else {
                         Toast.makeText(context, "Failed to save (name conflict?)", Toast.LENGTH_SHORT).show()
                     }
@@ -681,52 +774,6 @@ fun SettingsTab() {
                                             }
                                         )
                                     }
-                            }
-                        }
-
-                        // Custom presets list
-                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-                        Text(
-                            "Saved Presets",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-
-                        customPresets.forEach { preset ->
-                            Card(
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-                            ) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            preset.name,
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            color = MaterialTheme.colorScheme.onSurface
-                                        )
-                                        if (preset.command.isNotBlank()) {
-                                            Text(
-                                                preset.command.take(80) + if (preset.command.length > 80) "..." else "",
-                                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                        }
-                                    }
-                                    val isBuiltIn = SettingsManager.BUILT_IN_PRESETS.any { it.name == preset.name }
-                                    if (!isBuiltIn) {
-                                        IconButton(onClick = { presetToDelete = preset.name; showDeleteDialog = true }) {
-                                            Icon(Icons.Filled.Delete, contentDescription = "Delete",
-                                                tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(20.dp))
-                                        }
-                                    }
-                                }
                             }
                         }
                     }
