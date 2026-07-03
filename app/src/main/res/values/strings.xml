@@ -9,4 +9,18 @@
     <!-- Quick Settings tile -->
     <string name="tile_label_active">ADB Bridge: On</string>
     <string name="tile_label_inactive">ADB Bridge: Off</string>
+
+    <!-- TV Discovery (v2.1.0) -->
+    <string name="tv_scan_scanning">Scanning for TVs…</string>
+    <string name="tv_scan_found">%d TV(s) found</string>
+    <string name="tv_scan_none">No TVs found yet</string>
+    <string name="tv_scan_tap_to_retry">Tap refresh to scan again</string>
+    <string name="tv_scan_still_scanning">Still scanning…</string>
+    <string name="tv_selected">Selected</string>
+    <string name="tv_status_available">Available</string>
+    <string name="tv_status_cached">Cached</string>
+    <string name="tv_forget">Forget Device</string>
+    <string name="tv_test_connection">Test Connection</string>
+    <string name="tv_advanced">Advanced Manual Entry</string>
+    <string name="tv_advanced_hint">For power users — enter an IP and port manually if auto-discovery misses your TV.</string>
 </resources>

@@ -33,8 +33,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.lifecycleScope
 import com.adbcommander.ui.theme.ADBCommanderTheme
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -120,6 +123,7 @@ fun ConnectionTab() {
 
     var tvHost by remember { mutableStateOf("") }
     var tvPort by remember { mutableIntStateOf(SettingsManager.DEFAULT_TV_PORT) }
+    var tvName by remember { mutableStateOf("") }
     var customCommand by remember { mutableStateOf(SettingsManager.DEFAULT_COMMAND) }
     var autoExecute by remember { mutableStateOf(false) }
 
@@ -127,6 +131,13 @@ fun ConnectionTab() {
     var isTesting by remember { mutableStateOf(false) }
     var runOutput by remember { mutableStateOf<String?>(null) }
     var isRunning by remember { mutableStateOf(false) }
+
+    // ── Discovery state (v2.1.0) ──────────────────────────────────────
+    val discovery = remember { TvDiscoveryService(context) }
+    var discoveredTvs by remember { mutableStateOf<List<TvDiscoveryService.DiscoveredTv>>(emptyList()) }
+    var isScanning by remember { mutableStateOf(false) }
+    var expandedRowHost by remember { mutableStateOf<String?>(null) }
+    var manualExpanded by remember { mutableStateOf(false) }
 
     // Preset state — initialize with built-in presets only (in-memory, no I/O).
     // Custom presets are loaded async in [LaunchedEffect] below so the UI
@@ -150,13 +161,46 @@ fun ConnectionTab() {
         val cmd = settings.getDefaultCommand()
         val auto = settings.getAutoExecute()
         val sel = settings.getSelectedPreset()
+        val selName = settings.getSelectedTvName()
         val all = withContext(Dispatchers.IO) { settings.getAllPresets() }
         tvHost = h
         tvPort = p
+        tvName = selName
         customCommand = cmd
         autoExecute = auto
         selectedPresetName = sel
         presets = all
+    }
+
+    // ── Lifecycle-tied discovery scan ─────────────────────────────────
+    // Starts the moment ConnectionTab enters composition (ON_START) and
+    // cancels all mDNS + subnet-sweep sockets when the view exits. Uses
+    // lifecycleScope so the job is also torn down if the Activity itself
+    // is destroyed. The rescan button reuses [startScan] to cancel and
+    // restart the flow on demand.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var scanJob by remember { mutableStateOf<Job?>(null) }
+
+    val startScan: () -> Unit = {
+        scanJob?.cancel()
+        isScanning = true
+        scanJob = lifecycleOwner.lifecycleScope.launch {
+            try {
+                discovery.discover().collect { tvs ->
+                    discoveredTvs = tvs
+                }
+            } finally {
+                isScanning = false
+            }
+        }
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        startScan()
+        onDispose {
+            scanJob?.cancel()
+            isScanning = false
+        }
     }
 
     // ── Save Preset Dialog ───────────────────────────────────────────
@@ -244,49 +288,233 @@ fun ConnectionTab() {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // ═══ TV Connection ═════════════════════════════════════════════
-        SectionHeader("TV Connection", Icons.Filled.Link)
+        // ═══ TV Scan (v2.1.0) ═════════════════════════════════════════
+        SectionHeader("TV Scan", Icons.Filled.Wifi)
 
-        OutlinedTextField(
-            value = tvHost,
-            onValueChange = { tvHost = it; scope.launch { settings.setTvHost(it) } },
-            label = { Text("TV IP Address") },
-            placeholder = { Text("192.168.1.123") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth()
-        )
-
-        OutlinedTextField(
-            value = tvPort.toString(),
-            onValueChange = {
-                it.toIntOrNull()?.let { p -> tvPort = p; scope.launch { settings.setTvPort(p) } }
-            },
-            label = { Text("Connection Port") },
-            placeholder = { Text("5555") },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            modifier = Modifier.fillMaxWidth()
-        )
-
-        Button(
-            onClick = {
-                if (tvHost.isBlank()) { connectionStatus = "Enter TV IP first"; return@Button }
-                isTesting = true; connectionStatus = null
-                scope.launch {
-                    val result = AdbManager.testConnection(context, tvHost, tvPort)
-                    isTesting = false
-                    connectionStatus = if (result.isSuccess)
-                        "Connected! TV responded: ${result.getOrDefault("")}"
-                    else
-                        "Failed: ${result.exceptionOrNull()?.message}"
-                }
-            },
-            enabled = !isTesting && tvHost.isNotBlank(),
-            modifier = Modifier.fillMaxWidth()
+        // Scan status row
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
         ) {
-            Icon(Icons.Filled.CheckCircle, contentDescription = null)
-            Spacer(Modifier.width(8.dp))
-            Text(if (isTesting) "Testing..." else "Test Connection")
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (isScanning) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    Icon(Icons.Filled.WifiFind, contentDescription = null, modifier = Modifier.size(20.dp),
+                        tint = MaterialTheme.colorScheme.primary)
+                }
+                Spacer(Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        when {
+                            isScanning && discoveredTvs.isEmpty() -> context.getString(R.string.tv_scan_scanning)
+                            isScanning && discoveredTvs.isNotEmpty() -> context.getString(R.string.tv_scan_still_scanning)
+                            discoveredTvs.isEmpty() -> context.getString(R.string.tv_scan_none)
+                            else -> context.getString(R.string.tv_scan_found).format(discoveredTvs.size)
+                        },
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    if (!isScanning && discoveredTvs.isEmpty()) {
+                        Text(
+                            context.getString(R.string.tv_scan_tap_to_retry),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                IconButton(onClick = {
+                    // Manual re-trigger: cancel and restart the discovery flow.
+                    discoveredTvs = emptyList()
+                    startScan()
+                }) {
+                    Icon(Icons.Filled.Refresh, contentDescription = "Rescan")
+                }
+            }
+        }
+
+        // Active target indicator
+        if (tvHost.isNotBlank()) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f))
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Filled.CastConnected, contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(10.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            if (tvName.isNotBlank()) "Active: $tvName" else "Active: $tvHost",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            "$tvHost:$tvPort",
+                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    }
+                }
+            }
+        }
+
+        // Discovered TV list
+        if (discoveredTvs.isNotEmpty()) {
+            Text(
+                "Discovered devices",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            discoveredTvs.forEach { tv ->
+                DiscoveredTvRow(
+                    tv = tv,
+                    isSelected = tv.host == tvHost && tvHost.isNotBlank(),
+                    isExpanded = expandedRowHost == tv.host,
+                    onTap = {
+                        // Tap row → instantly assign + save as active target.
+                        tvHost = tv.host
+                        tvPort = tv.port
+                        tvName = tv.name
+                        connectionStatus = null
+                        scope.launch {
+                            settings.setTvHost(tv.host)
+                            settings.setTvPort(tv.port)
+                            settings.setSelectedTvName(tv.name)
+                        }
+                        Toast.makeText(context, "Selected: ${tv.name}", Toast.LENGTH_SHORT).show()
+                    },
+                    onExpandToggle = {
+                        expandedRowHost = if (expandedRowHost == tv.host) null else tv.host
+                    },
+                    onTest = {
+                        isTesting = true; connectionStatus = null
+                        scope.launch {
+                            val result = AdbManager.testConnection(context, tv.host, tv.port)
+                            isTesting = false
+                            connectionStatus = if (result.isSuccess)
+                                "Connected! ${tv.name} responded: ${result.getOrDefault("")}"
+                            else
+                                "Failed: ${result.exceptionOrNull()?.message}"
+                        }
+                    },
+                    onForget = {
+                        discovery.forgetDevice(tv.host)
+                        if (tv.host == tvHost) {
+                            tvHost = ""
+                            tvName = ""
+                            scope.launch {
+                                settings.setTvHost("")
+                                settings.setSelectedTvName("")
+                            }
+                        }
+                        Toast.makeText(context, "Forgot ${tv.name}", Toast.LENGTH_SHORT).show()
+                    }
+                )
+            }
+        }
+
+        // ── Advanced Manual Entry (collapsible, default closed) ────────
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            Column {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { manualExpanded = !manualExpanded }
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Filled.Edit, contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(10.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            context.getString(R.string.tv_advanced),
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            context.getString(R.string.tv_advanced_hint),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Icon(
+                        if (manualExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+
+                AnimatedVisibility(visible = manualExpanded, enter = expandVertically(), exit = shrinkVertically()) {
+                    Column(
+                        modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        HorizontalDivider()
+                        OutlinedTextField(
+                            value = tvHost,
+                            onValueChange = {
+                                tvHost = it
+                                tvName = ""  // manual entry has no friendly name
+                                scope.launch {
+                                    settings.setTvHost(it)
+                                    settings.setSelectedTvName("")
+                                }
+                            },
+                            label = { Text("TV IP Address") },
+                            placeholder = { Text("192.168.1.123") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = tvPort.toString(),
+                            onValueChange = {
+                                it.toIntOrNull()?.let { p ->
+                                    tvPort = p
+                                    scope.launch { settings.setTvPort(p) }
+                                }
+                            },
+                            label = { Text("Connection Port") },
+                            placeholder = { Text("5555") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Button(
+                            onClick = {
+                                if (tvHost.isBlank()) { connectionStatus = "Enter TV IP first"; return@Button }
+                                isTesting = true; connectionStatus = null
+                                scope.launch {
+                                    val result = AdbManager.testConnection(context, tvHost, tvPort)
+                                    isTesting = false
+                                    connectionStatus = if (result.isSuccess)
+                                        "Connected! TV responded: ${result.getOrDefault("")}"
+                                    else
+                                        "Failed: ${result.exceptionOrNull()?.message}"
+                                }
+                            },
+                            enabled = !isTesting && tvHost.isNotBlank(),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Filled.CheckCircle, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text(if (isTesting) "Testing..." else "Test Connection")
+                        }
+                    }
+                }
+            }
         }
 
         connectionStatus?.let {
@@ -1042,6 +1270,147 @@ fun SettingsTab() {
 // ═══════════════════════════════════════════════════════════════════════
 //  REUSABLE COMPONENTS
 // ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * A single discovered TV row in the ConnectionTab device list.
+ *
+ * Collapsed state: status dot + bold name + source/IP subtitle + expand icon.
+ * Expanded state: full IP:port, source, last-seen, Test Connection + Forget buttons.
+ *
+ * Tapping the row itself (not the expand icon) selects the device as the
+ * active ADB routing target.
+ */
+@Composable
+fun DiscoveredTvRow(
+    tv: TvDiscoveryService.DiscoveredTv,
+    isSelected: Boolean,
+    isExpanded: Boolean,
+    onTap: () -> Unit,
+    onExpandToggle: () -> Unit,
+    onTest: () -> Unit,
+    onForget: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isSelected)
+                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+            else MaterialTheme.colorScheme.surface
+        )
+    ) {
+        Column {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onTap() }
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Status dot — green if selected, gray if available, amber if cached
+                Surface(
+                    modifier = Modifier.size(10.dp).clip(CircleShape),
+                    color = when {
+                        isSelected -> MaterialTheme.colorScheme.primary
+                        tv.source == "cached" -> MaterialTheme.colorScheme.tertiary
+                        else -> MaterialTheme.colorScheme.outline
+                    }
+                ) {}
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        tv.name,
+                        style = MaterialTheme.typography.bodyLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        buildString {
+                            append(tv.host)
+                            append(":")
+                            append(tv.port)
+                            append("  ·  ")
+                            append(when (tv.source) {
+                                "mdns" -> "mDNS"
+                                "scan" -> "Network scan"
+                                "cached" -> "Cached"
+                                else -> tv.source
+                            })
+                        },
+                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                if (isSelected) {
+                    Icon(Icons.Filled.CheckCircle, contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(4.dp))
+                }
+                IconButton(onClick = onExpandToggle, modifier = Modifier.size(28.dp)) {
+                    Icon(
+                        if (isExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                        contentDescription = "Details",
+                        modifier = Modifier.size(20.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            AnimatedVisibility(visible = isExpanded, enter = expandVertically(), exit = shrinkVertically()) {
+                Column(
+                    modifier = Modifier.padding(start = 14.dp, end = 14.dp, bottom = 14.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    HorizontalDivider()
+                    DetailRow("IP Address", tv.host)
+                    DetailRow("Port", tv.port.toString())
+                    DetailRow("Source", when (tv.source) {
+                        "mdns" -> "mDNS broadcast"
+                        "scan" -> "Subnet sweep"
+                        "cached" -> "Previously seen"
+                        else -> tv.source
+                    })
+                    if (tv.lastSeen > 0) {
+                        DetailRow("Last seen", CommandLogStore.formatTimestamp(tv.lastSeen))
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(onClick = onTest, modifier = Modifier.weight(1f)) {
+                            Icon(Icons.Filled.NetworkCheck, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Test")
+                        }
+                        OutlinedButton(
+                            onClick = onForget,
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = MaterialTheme.colorScheme.error
+                            )
+                        ) {
+                            Icon(Icons.Filled.DeleteOutline, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Forget")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DetailRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(value, style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace))
+    }
+}
 
 @Composable
 fun PackageRow(packageName: String, onCopy: () -> Unit, onBuildPreset: () -> Unit) {

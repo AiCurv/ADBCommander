@@ -68,3 +68,36 @@ Stage Summary:
 - 4 modified files: AndroidManifest.xml, MainActivity.kt, strings.xml, build.gradle.kts.
 - AdbManager.kt and ShareReceiverActivity.kt intentionally untouched.
 - Build delegated to GitHub Actions CI — no local compilation attempted.
+
+---
+Task ID: 9
+Agent: Main Agent
+Task: Step 9 — feat-tv-network-discovery-scanner-ui-swap (v2.1.0)
+
+Work Log:
+- Created TvDiscoveryService.kt — dual-tier discovery engine:
+  - Tier 1: NsdManager.discoverServices("_adb-tls-connect._tcp") with ResolveListener to extract friendly name + host + port
+  - Tier 2: after 3-second grace period with zero mDNS hits, concurrent subnet sweep of /24 on port 5555 (50 coroutines, 500ms TCP timeout each) via Semaphore-bounded coroutine launch
+  - Returns cold Flow<List<DiscoveredTv>> via callbackFlow; emits cached devices instantly, then live updates as mDNS resolves or subnet sweep finds hosts
+  - Persists all discovered devices to discovered_tvs_cache.json in app internal storage; loads cache on next launch for instant population
+  - forgetDevice(host) and clearCache() methods for UI management
+  - Local IP detection: WifiManager.connectionInfo.ipAddress first, NetworkInterface enumeration fallback
+- Updated SettingsManager.kt: added KEY_SELECTED_TV_NAME DataStore key + getSelectedTvName()/setSelectedTvName() suspend accessors so the friendly name of the active TV persists across launches
+- Rewrote ConnectionTab in MainActivity.kt:
+  - Removed the hardcoded IP and Port OutlinedTextFields from the primary viewport
+  - Added TV Scan card at top with scan status (scanning/found N/none/still scanning), spinner, and Rescan button
+  - Added Active Target indicator card showing the currently selected TV name + host:port
+  - Added scrollable Discovered TV list — each row shows status dot (green=selected, gray=available, amber=cached), bold friendly name, IP:port · source subtitle, and expand icon. Tap = select+save. Expand = full details + Test + Forget buttons
+  - Encapsulated the old IP/Port text fields inside a collapsible "Advanced Manual Entry" accordion card (default closed) for power users
+  - Lifecycle-tied scanning: DisposableEffect(lifecycleOwner) starts the scan via lifecycleScope.launch when ConnectionTab enters composition; onDispose cancels the scan job, tearing down mDNS + all subnet-sweep coroutines. Rescan button cancels current job and starts fresh via shared startScan lambda
+  - Added DiscoveredTvRow and DetailRow reusable composables
+- Updated strings.xml with TV discovery strings (tv_scan_scanning, tv_scan_found, tv_scan_none, tv_scan_tap_to_retry, tv_scan_still_scanning, tv_selected, tv_status_available, tv_status_cached, tv_forget, tv_test_connection, tv_advanced, tv_advanced_hint)
+- Bumped version: versionCode 29 → 30, versionName 2.0.0 → 2.1.0
+- Overwrote README.md with v2.1.0 architecture documentation including new TV Network Discovery section detailing dual-tier strategy, caching, lifecycle, and UI behavior
+- Did NOT modify AdbManager.kt or ShareReceiverActivity.kt — they still take host+port parameters; values now come from the selected discovered device via SettingsManager
+
+Stage Summary:
+- 1 new file: TvDiscoveryService.kt (dual-tier discovery: mDNS + subnet sweep, JSON cache, Flow-based)
+- 4 modified files: MainActivity.kt (ConnectionTab UI swap + DiscoveredTvRow composable), SettingsManager.kt (+selectedTvName), strings.xml (+12 TV strings), build.gradle.kts (version bump)
+- README.md overwritten with v2.1.0 docs
+- Build delegated to GitHub Actions CI — no local compilation attempted

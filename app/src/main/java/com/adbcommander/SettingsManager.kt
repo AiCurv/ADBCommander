@@ -26,6 +26,7 @@ class SettingsManager(private val context: Context) {
         val KEY_AUTO_EXECUTE = booleanPreferencesKey("auto_execute")
         val KEY_SELECTED_PRESET = stringPreferencesKey("selected_preset")
         val KEY_CONTENT_TYPE = stringPreferencesKey("content_type")
+        val KEY_SELECTED_TV_NAME = stringPreferencesKey("selected_tv_name")
 
         const val DEFAULT_TV_HOST = ""
         const val DEFAULT_TV_PORT = 5555
@@ -65,6 +66,7 @@ class SettingsManager(private val context: Context) {
     val autoExecute = context.dataStore.data.map { it[KEY_AUTO_EXECUTE] ?: DEFAULT_AUTO_EXECUTE }
     val selectedPreset = context.dataStore.data.map { it[KEY_SELECTED_PRESET] ?: "Universal Default" }
     val contentType = context.dataStore.data.map { it[KEY_CONTENT_TYPE] ?: CONTENT_TYPE_URL }
+    val selectedTvName = context.dataStore.data.map { it[KEY_SELECTED_TV_NAME] ?: "" }
 
     suspend fun getTvHost(): String = tvHost.first()
     suspend fun getTvPort(): Int = tvPort.first()
@@ -72,6 +74,7 @@ class SettingsManager(private val context: Context) {
     suspend fun getAutoExecute(): Boolean = autoExecute.first()
     suspend fun getSelectedPreset(): String = selectedPreset.first()
     suspend fun getContentType(): String = contentType.first()
+    suspend fun getSelectedTvName(): String = selectedTvName.first()
 
     suspend fun setTvHost(host: String) { context.dataStore.edit { it[KEY_TV_HOST] = host } }
     suspend fun setTvPort(port: Int) { context.dataStore.edit { it[KEY_TV_PORT] = port } }
@@ -79,6 +82,7 @@ class SettingsManager(private val context: Context) {
     suspend fun setAutoExecute(auto: Boolean) { context.dataStore.edit { it[KEY_AUTO_EXECUTE] = auto } }
     suspend fun setSelectedPreset(name: String) { context.dataStore.edit { it[KEY_SELECTED_PRESET] = name } }
     suspend fun setContentType(type: String) { context.dataStore.edit { it[KEY_CONTENT_TYPE] = type } }
+    suspend fun setSelectedTvName(name: String) { context.dataStore.edit { it[KEY_SELECTED_TV_NAME] = name } }
 
     // ── Preset management via SharedPreferences ──────────────────────
 
