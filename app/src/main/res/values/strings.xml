@@ -1,3 +1,12 @@
 <resources>
     <string name="app_name">ADB Commander</string>
+
+    <!-- Foreground service notification -->
+    <string name="notification_channel_name">ADB TV Bridge</string>
+    <string name="notification_channel_desc">Persistent background bridge to your Android TV</string>
+    <string name="notification_text">ADB bridge to TV is active</string>
+
+    <!-- Quick Settings tile -->
+    <string name="tile_label_active">ADB Bridge: On</string>
+    <string name="tile_label_inactive">ADB Bridge: Off</string>
 </resources>

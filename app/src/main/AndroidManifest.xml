@@ -6,6 +6,12 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!-- Foreground service permissions (Step 8 / v2.0.0) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
@@ -45,5 +51,33 @@
                 <data android:mimeType="*/*" />
             </intent-filter>
         </activity>
+
+        <!--
+          Persistent foreground service representing the active TV bridge.
+          Uses the connectedDevice foreground service type because the
+          service represents an active connection to an external device
+          (the TV over ADB). Survives app swipe-away from Recents via
+          START_STICKY and onTaskRemoved self-restart.
+        -->
+        <service
+            android:name=".AdbForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+
+        <!--
+          Quick Settings tile for one-tap toggle of the bridge service.
+          Tile click: if TV host is configured → toggle service; if not
+          configured → launch MainActivity so user can pick a device.
+        -->
+        <service
+            android:name=".AdbTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_tile"
+            android:label="@string/tile_label_inactive"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>

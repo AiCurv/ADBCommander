@@ -43,3 +43,28 @@ Stage Summary:
 - New {MIME} token dynamically resolves to image/*, video/*, audio/*, or */* based on file extension and incoming MIME type
 - Default command template: am start -a android.intent.action.VIEW -d "{URL}" -t "{MIME}"
 - Commit pushed to https://github.com/AiCurv/ADBCommander.git (branch main)
+
+---
+Task ID: 8
+Agent: Main Agent
+Task: Step 8 — feat-foreground-service-qs-tile-battery-optimization (v2.0.0)
+
+Work Log:
+- Audited MainActivity.kt for launch-latency blockers: removed auto-call to requestBatteryExemption() from onCreate() (was firing a system Intent on every cold start and blocking the Main thread). Battery-optimization prompt is now user-initiated from the Settings tab.
+- Forced all heavy reads onto Dispatchers.IO via LaunchedEffect: ConnectionTab now initializes presets with BUILT_IN_PRESETS in-memory and loads custom presets async; SettingsTab now initializes logs empty and loads them async; PowerManager.isIgnoringBatteryOptimizations() call pushed to IO.
+- Created AdbForegroundService.kt — persistent foreground service with connectedDevice FGS type, low-priority ongoing notification, START_STICKY return, onTaskRemoved() self-restart so swiping the app from Recents does NOT terminate the bridge. Static isRunning() flag for tile/UI mirroring.
+- Created AdbTileService.kt — Quick Settings tile. Tap: if TV host is configured → toggle AdbForegroundService; if blank → launch MainActivity via PendingIntent (Android 14+) or raw Intent (older). Tile state mirrors service state.
+- Updated AndroidManifest.xml — added FOREGROUND_SERVICE, FOREGROUND_SERVICE_CONNECTED_DEVICE, POST_NOTIFICATIONS permissions; declared AdbForegroundService with connectedDevice FGS type; declared AdbTileService with BIND_QUICK_SETTINGS_TILE permission and QS_TILE intent-filter.
+- Added Background Service & Battery premium card to SettingsTab — start/stop foreground service button, request-battery-immunity button via Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, live state indicators.
+- Added ic_notification.xml and ic_tile.xml vector drawables for the notification small icon and QS tile icon.
+- Updated strings.xml with notification channel name/desc/text and tile label active/inactive.
+- Bumped version: versionCode 28 → 29, versionName 1.9.0 → 2.0.0.
+- Overwrote README.md with v2.0.0 architecture documentation covering foreground service, QS tile, battery immunity, async launch pattern, and new presets.
+- Did NOT modify AdbManager.kt or ShareReceiverActivity.kt — backend file modifications strictly avoided per prior step feedback.
+
+Stage Summary:
+- 4 new architectural features delivered: launch-latency fix (async IO), persistent foreground service (survives swipe-away), Quick Settings tile (one-tap toggle or device-pick launch), premium battery-optimization prompt card.
+- 4 new files: AdbForegroundService.kt, AdbTileService.kt, res/drawable/ic_notification.xml, res/drawable/ic_tile.xml.
+- 4 modified files: AndroidManifest.xml, MainActivity.kt, strings.xml, build.gradle.kts.
+- AdbManager.kt and ShareReceiverActivity.kt intentionally untouched.
+- Build delegated to GitHub Actions CI — no local compilation attempted.

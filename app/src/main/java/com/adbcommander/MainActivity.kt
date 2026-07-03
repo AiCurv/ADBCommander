@@ -3,7 +3,6 @@ package com.adbcommander
 import android.content.Intent
 import android.graphics.drawable.Drawable
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
@@ -35,33 +34,24 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.adbcommander.ui.theme.ADBCommanderTheme
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        requestBatteryExemption()
+        // NOTE: Battery-optimization exemption is intentionally NOT auto-prompted
+        // here. Auto-prompting on every cold start blocks the Main thread with a
+        // system Intent and was the #1 cause of launch latency. The user now
+        // triggers it on demand from the premium "Background Service & Battery"
+        // card in the Settings tab — see [SettingsTab].
         enableEdgeToEdge()
         setContent {
             ADBCommanderTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     MainScreen()
                 }
-            }
-        }
-    }
-
-    private fun requestBatteryExemption() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val packageName = packageName
-            val pm = getSystemService(POWER_SERVICE) as PowerManager
-            if (!pm.isIgnoringBatteryOptimizations(packageName)) {
-                try {
-                    val intent = Intent()
-                    intent.action = Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
-                    intent.data = Uri.parse("package:$packageName")
-                    startActivity(intent)
-                } catch (_: Exception) {}
             }
         }
     }
@@ -138,8 +128,10 @@ fun ConnectionTab() {
     var runOutput by remember { mutableStateOf<String?>(null) }
     var isRunning by remember { mutableStateOf(false) }
 
-    // Preset state
-    var presets by remember { mutableStateOf(settings.getAllPresets()) }
+    // Preset state — initialize with built-in presets only (in-memory, no I/O).
+    // Custom presets are loaded async in [LaunchedEffect] below so the UI
+    // renders instantly without blocking on SharedPreferences reads.
+    var presets by remember { mutableStateOf(SettingsManager.BUILT_IN_PRESETS) }
     var selectedPresetName by remember { mutableStateOf("Universal Default") }
     var presetExpanded by remember { mutableStateOf(false) }
 
@@ -150,11 +142,21 @@ fun ConnectionTab() {
     var presetToDelete by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(Unit) {
-        tvHost = settings.getTvHost()
-        tvPort = settings.getTvPort()
-        customCommand = settings.getDefaultCommand()
-        autoExecute = settings.getAutoExecute()
-        selectedPresetName = settings.getSelectedPreset()
+        // All heavy reads (DataStore + SharedPreferences JSON) run on IO.
+        // The UI is already rendered with built-in presets by this point,
+        // so swapping in custom presets does not cause a launch stall.
+        val h = settings.getTvHost()
+        val p = settings.getTvPort()
+        val cmd = settings.getDefaultCommand()
+        val auto = settings.getAutoExecute()
+        val sel = settings.getSelectedPreset()
+        val all = withContext(Dispatchers.IO) { settings.getAllPresets() }
+        tvHost = h
+        tvPort = p
+        customCommand = cmd
+        autoExecute = auto
+        selectedPresetName = sel
+        presets = all
     }
 
     // ── Save Preset Dialog ───────────────────────────────────────────
@@ -484,8 +486,11 @@ fun SettingsTab() {
     var buildType by remember { mutableStateOf("{MIME}") }
     var buildComponent by remember { mutableStateOf("") }
 
-    // ── Logs state ─────────────────────────────────────────────────────
-    var logs by remember { mutableStateOf(logStore.getLogs()) }
+    // ── Logs state ───────────────────────────────────────────────────
+    // Initialize empty so the screen renders instantly. The actual logs
+    // are read from disk async in [LaunchedEffect] below — avoids a JSON
+    // file read blocking first composition.
+    var logs by remember { mutableStateOf<List<CommandLogStore.LogEntry>>(emptyList()) }
     var showLogDialog by remember { mutableStateOf(false) }
     var selectedLogCommand by remember { mutableStateOf("") }
 
@@ -493,8 +498,22 @@ fun SettingsTab() {
     var showImportDialog by remember { mutableStateOf(false) }
     var importJsonText by remember { mutableStateOf("") }
 
+    // ── Background service & battery state ─────────────────────────────
+    var serviceRunning by remember { mutableStateOf(AdbForegroundService.isRunning()) }
+    var batteryImmune by remember { mutableStateOf(false) }
+    var batteryChecked by remember { mutableStateOf(0) }
+
     LaunchedEffect(Unit) {
-        logs = logStore.getLogs()
+        // Load logs off the Main thread — JSON file parse can be slow.
+        logs = withContext(Dispatchers.IO) { logStore.getLogs() }
+    }
+    LaunchedEffect(batteryChecked) {
+        // Cheap PowerManager IPC — still off Main for cleanliness.
+        batteryImmune = withContext(Dispatchers.IO) {
+            val pm = context.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
+            pm.isIgnoringBatteryOptimizations(context.packageName)
+        }
+        serviceRunning = AdbForegroundService.isRunning()
     }
 
     // ── Log Detail Dialog ──────────────────────────────────────────────
@@ -666,6 +685,126 @@ fun SettingsTab() {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        // ═══════════════════════════════════════════════════════════════
+        //  BACKGROUND SERVICE & BATTERY OPTIMIZATION — Card (v2.0.0)
+        // ═══════════════════════════════════════════════════════════════
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = if (serviceRunning)
+                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+                else MaterialTheme.colorScheme.surfaceVariant
+            )
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Filled.Bolt,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "Background Service & Battery",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            "Persistent TV bridge + Quick Settings tile",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(12.dp))
+
+                // ── Battery optimization row ────────────────────────────
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Icon(
+                        if (batteryImmune) Icons.Filled.VerifiedUser else Icons.Filled.GppMaybe,
+                        contentDescription = null,
+                        tint = if (batteryImmune) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            if (batteryImmune) "Battery immunity granted" else "Battery optimization is active",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Text(
+                            if (batteryImmune)
+                                "OS will not sleep the background ADB thread loop"
+                            else
+                                "OS may forcefully sleep background ADB threads",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    TextButton(onClick = {
+                        try {
+                            val intent = Intent().apply {
+                                action = Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
+                                data = Uri.parse("package:${context.packageName}")
+                            }
+                            context.startActivity(intent)
+                        } catch (_: Exception) {
+                            Toast.makeText(context, "Cannot request battery exemption on this device", Toast.LENGTH_SHORT).show()
+                        }
+                        // Re-check after the user returns from the system prompt.
+                        batteryChecked++
+                    }) {
+                        Text(if (batteryImmune) "Re-check" else "Grant immunity")
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(8.dp))
+
+                // ── Foreground service row ──────────────────────────────
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Icon(
+                        if (serviceRunning) Icons.Filled.PlayCircle else Icons.Filled.PauseCircle,
+                        contentDescription = null,
+                        tint = if (serviceRunning) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            if (serviceRunning) "TV bridge running" else "TV bridge stopped",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Text(
+                            "Survives swipe-away. Add the Quick Settings tile for one-tap toggle.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Button(onClick = {
+                        if (AdbForegroundService.isRunning()) {
+                            AdbForegroundService.stop(context)
+                        } else {
+                            AdbForegroundService.start(context)
+                        }
+                        serviceRunning = AdbForegroundService.isRunning()
+                    }) {
+                        Icon(
+                            if (serviceRunning) Icons.Filled.Stop else Icons.Filled.PlayArrow,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(if (serviceRunning) "Stop" else "Start")
+                    }
+                }
+            }
+        }
+
         // ═══════════════════════════════════════════════════════════════
         //  PACKAGE MANAGER — Expandable Card
         // ═══════════════════════════════════════════════════════════════
