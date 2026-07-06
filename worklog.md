@@ -101,3 +101,32 @@ Stage Summary:
 - 4 modified files: MainActivity.kt (ConnectionTab UI swap + DiscoveredTvRow composable), SettingsManager.kt (+selectedTvName), strings.xml (+12 TV strings), build.gradle.kts (version bump)
 - README.md overwritten with v2.1.0 docs
 - Build delegated to GitHub Actions CI — no local compilation attempted
+
+---
+Task ID: 10
+Agent: Main Agent
+Task: Step 10 — fix-scanner-names-single-tab-and-dual-share (v2.2.0)
+
+Work Log:
+- TvDiscoveryService.kt: enforced strict 7-second HARD_TIMEOUT_MS ceiling on the entire discover() flow. Added a hardTimeoutJob that delays 7000ms then closes the channel — closing triggers awaitClose which cancels sweepJob, persistJob, hardTimeoutJob, fetchScope (SupervisorJob), and stops the NsdManager listener. No background coroutine survives the scan window.
+- TvDiscoveryService.kt: fixed compile-breaking typo `resultsost] = DiscoveredTv(` → `results[host] = tv` in subnetSweep. v2.1.0 would not have compiled without this fix.
+- TvDiscoveryService.kt: added enrichDeviceName() — fires a non-blocking ADB shell `settings get global device_name` (with `getprop ro.product.model` fallback) on a SupervisorJob+IO scope for every freshly discovered device (both mDNS and subnet-sweep paths). Resolved name replaces the placeholder via seen[host].copy(name = resolved) and triggers an immediate trySend(emitSorted()) through an onResolved lambda captured from the ProducerScope.
+- TvDiscoveryService.kt: added public suspend resolveDeviceName(host, port) helper for one-shot lookups from MainActivity when the user taps a device.
+- TvDiscoveryService.kt: each name fetch is bounded by NAME_FETCH_TIMEOUT_MS (2500ms) via withTimeoutOrNull so a slow TV cannot stall the enrichment pipeline.
+- MainActivity.kt: deleted the 2-tab bottom NavigationBar entirely. MainScreen is now a single Scaffold with TopAppBar containing a Gear IconButton (Icons.Filled.Settings) in the actions slot. Tapping it opens a ModalBottomSheet that hosts the new SettingsSheet composable (renamed from SettingsTab). The sheet has its own header row (Settings title + X close button) and uses skipPartiallyExpanded = true so it opens full-height by default.
+- MainActivity.kt: ConnectionTab is now the sole content of the Scaffold body. No selectedTab state, no NavigationBarItem imports needed.
+- MainActivity.kt: replaced all "Universal Default" string literals with SettingsManager.DEFAULT_PRESET_NAME (new constant = "SmartTube") so the default preset reference survives future preset list changes.
+- AndroidManifest.xml: removed the SEND */* intent-filter from the main ShareReceiverActivity declaration. Added two activity-alias entries — .ShareReceiverManual (label "ADB Commander (Manual)") and .ShareReceiverAuto (label "ADB Commander (Auto-Execute)") — each with its own SEND */* intent-filter, both targeting .ShareReceiverActivity. Both aliases are exported and enabled so they show as two distinct entries in the system share menu.
+- ShareReceiverActivity.kt: added forcedAutoExecute field. In onCreate, reads intent.component.className and sets forcedAutoExecute = true for .ShareReceiverAuto, false for .ShareReceiverManual, null otherwise. Passes forcedAutoExecute into ShareReceiverDialog. The dialog's LaunchedEffect uses forcedAutoExecute ?: settings.getAutoExecute() so the alias-forced mode takes precedence over the persisted setting.
+- strings.xml: added share_label_manual = "ADB Commander (Manual)" and share_label_auto = "ADB Commander (Auto-Execute)" referenced by the two activity-alias labels.
+- SettingsManager.kt: purged three dead built-in presets — "Universal Default" (which used com.cxinventor.file.explorer / Cx Player), "Send to TV Downloads", and "APK Installer". Only "SmartTube" remains in BUILT_IN_PRESETS. Updated DEFAULT_COMMAND to drop the Cx Player component (now package-agnostic: `am start -a android.intent.action.VIEW -d {URL} -t {MIME}`). Added DEFAULT_PRESET_NAME = "SmartTube" constant and changed selectedPreset flow fallback to use it.
+- build.gradle.kts: bumped versionCode 30 → 31, versionName 2.1.0 → 2.2.0.
+- README.md: rewrote architecture section for v2.2.0 — documents single-screen + Gear IconButton + ModalBottomSheet, dual share-sheet targets, 7-second hard timeout, device_name shell enrichment, and the preset purge.
+- Build delegated to GitHub Actions CI — no local compilation attempted (per user instruction "use github actions for build no local!").
+
+Stage Summary:
+- 5 files modified: TvDiscoveryService.kt (7s hard timeout + device_name enrichment + typo fix), MainActivity.kt (single-tab + Gear IconButton + ModalBottomSheet), ShareReceiverActivity.kt (alias-forced auto/manual mode), SettingsManager.kt (preset purge + DEFAULT_COMMAND cleanup + DEFAULT_PRESET_NAME constant), AndroidManifest.xml (dual activity-alias), strings.xml (share labels), build.gradle.kts (version bump), README.md (v2.2.0 docs).
+- All 5 user requirements satisfied: (1) 7-second hard timeout with full coroutine teardown, (2) true TV device names via `settings get global device_name` + `getprop ro.product.model` fallback, (3) single-tab UI with Gear IconButton → ModalBottomSheet settings overlay, (4) dual share-sheet activity-alias targets, (5) purged Cx Player / Send to Downloads / APK Installer presets.
+- Critical compile bug from v2.1.0 (`resultsost]` typo) fixed.
+- Commit: fix-scanner-names-single-tab-and-dual-share, version v2.2.0 / code 31.
+- Build delegated to GitHub Actions CI — no local compilation attempted.

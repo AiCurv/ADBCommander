@@ -39,18 +39,49 @@
 
         <activity
             android:name=".ShareReceiverActivity"
-            android:exported="true"
+            android:exported="false"
             android:theme="@style/Theme.ADBCommander.Transparent"
             android:excludeFromRecents="true"
             android:taskAffinity=""
-            android:noHistory="true">
-            <!-- Universal sharing — accepts all content types (photos, videos, audio, text, files) -->
+            android:noHistory="true" />
+
+        <!--
+          v2.2.0: Dual share-sheet targets via activity-alias.
+          Both aliases route to .ShareReceiverActivity but appear as TWO
+          separate entries in the system share menu. ShareReceiverActivity
+          inspects intent.component.className to know which mode to run.
+
+          • ShareReceiverManual  → always shows the interactive verification dialog
+          • ShareReceiverAuto    → skips the dialog and fires the saved preset
+                                    directly to the TV background pipeline
+        -->
+        <activity-alias
+            android:name=".ShareReceiverManual"
+            android:targetActivity=".ShareReceiverActivity"
+            android:label="@string/share_label_manual"
+            android:icon="@mipmap/ic_launcher"
+            android:exported="true"
+            android:enabled="true">
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="*/*" />
             </intent-filter>
-        </activity>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".ShareReceiverAuto"
+            android:targetActivity=".ShareReceiverActivity"
+            android:label="@string/share_label_auto"
+            android:icon="@mipmap/ic_launcher"
+            android:exported="true"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity-alias>
 
         <!--
           Persistent foreground service representing the active TV bridge.

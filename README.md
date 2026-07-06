@@ -2,37 +2,44 @@
 
 Android app (Kotlin + Jetpack Compose) that appears in the system Share menu for **all file types** — photos, videos, audio, text, documents, and any other files. Users define custom ADB shell commands with `{URL}`, `{MIME}`, and `{FILE}` placeholders, connect to Android TV over Wireless ADB, and execute commands directly from the phone. No PC required.
 
-## Architecture (v2.1.0)
+## Architecture (v2.2.0)
 
 ADB Commander uses a manual-connection, on-demand architecture, optionally backed by a **persistent foreground service** (`AdbForegroundService`) that keeps the process warm in the background so share-sheet executions launch with zero cold-start lag. TVs are discovered automatically via a **dual-tier network scanner** (`TvDiscoveryService`) — no IP typing required. The user taps a discovered device name, and all subsequent command executions use fresh ADB connections that open, run, and close automatically. This eliminates stale-socket and auto-reconnect bugs entirely.
 
 A **Quick Settings tile** (`AdbTileService`) lets the user toggle the bridge service from anywhere in the OS with one tap, or — if no TV IP is configured — jump straight to MainActivity to pick a device.
 
-A premium **Background Service & Battery** card in the Settings tab lets the user request `Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` so the OS never forcefully sleeps the background ADB thread loop.
+### Single-Screen UI + Settings Sheet (v2.2.0)
 
-### 2-Tab Bottom Navigation
+The bottom navigation bar has been removed. The app is now a **single Connection screen** with a **Gear IconButton** in the `TopAppBar` that opens a `ModalBottomSheet` overlay containing all configuration (Background Service & Battery, Package Manager, Backup & Restore, Execution Logs). This collapses the prior 2-tab structure into one operational surface and frees the bottom of the screen for content.
 
-The app is organized into exactly two tabs via a Material3 bottom navigation bar:
+**Connection Screen** — The primary operational surface. Contains the **TV Scan** card (auto-discovers TVs on the local network via mDNS + subnet sweep with a strict 7-second hard timeout, shows a scrollable list of real device names resolved via `settings get global device_name` with `getprop ro.product.model` fallback — tap one to select it as the active target), an "Active target" indicator showing the currently selected TV, a collapsible **Advanced Manual Entry** accordion (for power users who want to type an IP/port directly), the preset dropdown selector with "Save Current as Preset" button, the shell command text field, "RUN COMMAND" execution button, and the auto-execute toggle for share behavior.
 
-**Connection Tab** — The primary operational screen. Contains the **TV Scan** card (auto-discovers TVs on the local network via mDNS + subnet sweep, shows a scrollable list of device names — tap one to select it as the active target), an "Active target" indicator showing the currently selected TV, a collapsible **Advanced Manual Entry** accordion (for power users who want to type an IP/port directly), the preset dropdown selector with "Save Current as Preset" button, the shell command text field, "RUN COMMAND" execution button, and the auto-execute toggle for share behavior.
-
-**Settings Tab** — Configuration and history. Contains:
+**Settings Sheet** (opened via Gear IconButton) — Configuration and history. Contains:
 - **Background Service & Battery** card (v2.0.0) — start/stop the persistent TV bridge foreground service, request battery-optimization immunity, see live state.
 - **Package Manager Template Configurator** — scan TV packages (3rd-party or all), search and sort, build command templates from any package, with rendered app icons in circular containers.
 - **Backup & Restore Presets** — export custom presets to clipboard JSON, import from clipboard JSON.
 - **Execution Logs & History** — tap any entry to view the raw command text and copy it.
+
+### Dual Share-Sheet Targets (v2.2.0)
+
+Two distinct `activity-alias` entries in `AndroidManifest.xml` make ADB Commander appear as **two separate share targets** in the native Android share menu:
+
+- **ADB Commander (Manual)** — opens the interactive verification dialog so the user can pick a preset before firing the command.
+- **ADB Commander (Auto-Execute)** — skips the dialog and immediately fires the saved preset to the TV background pipeline.
+
+`ShareReceiverActivity` inspects `intent.component.className` to detect which alias the system routed through and forces the corresponding mode, overriding the persisted auto-execute setting.
 
 ### Core Files
 
 | File | Purpose |
 |------|---------|
 | `AdbManager.kt` | ADB connection management, shell execution, URL extraction, file push. Key methods: `executeShell()`, `prepareCommand()`, `prepareFileCommand()`, `shellEscape()`, `stripQuotesAroundToken()`, `resolveMimeType()`, `getExtensionFromFileName()`, `getMimeTypeFromExtension()` |
-| `MainActivity.kt` | 2-tab UI with Connection tab and Settings tab. Preset management, Package Manager dialog, Background Service & Battery card, execution logs. All heavy reads (DataStore, SharedPreferences JSON, log file) are pushed to `Dispatchers.IO` so launch is lag-free. |
-| `ShareReceiverActivity.kt` | Transparent dialog launched from Android's Share sheet. Parses shared content on `Dispatchers.IO` so the UI appears instantly. Supports auto-execute and manual preset selection. |
+| `MainActivity.kt` | Single-screen UI (v2.2.0): Connection screen + Gear IconButton in `TopAppBar` that opens a `ModalBottomSheet` settings overlay. Preset management, Package Manager dialog, Background Service & Battery card, execution logs. All heavy reads (DataStore, SharedPreferences JSON, log file) are pushed to `Dispatchers.IO` so launch is lag-free. |
+| `ShareReceiverActivity.kt` | Transparent dialog launched from Android's Share sheet. v2.2.0: detects which activity-alias routed the share (`ShareReceiverManual` vs `ShareReceiverAuto`) via `intent.component.className` and forces the corresponding mode (manual dialog vs auto-execute). Parses shared content on `Dispatchers.IO` so the UI appears instantly. |
 | `AdbForegroundService.kt` | Persistent foreground service representing the active TV bridge. Uses `connectedDevice` service type. Survives swipe-away via `START_STICKY` + `onTaskRemoved` self-restart. Displays a low-priority ongoing notification. |
 | `AdbTileService.kt` | Quick Settings tile. Tap: if TV host is configured → toggle the foreground service; if not configured → launch MainActivity so user can pick a device. |
-| `TvDiscoveryService.kt` | Dual-tier TV discovery. Tier 1: mDNS via `NsdManager` scanning `_adb-tls-connect._tcp` for friendly device names + host + port. Tier 2: if mDNS finds nothing in 3s, concurrent subnet sweep of `/24` on port 5555 (50 coroutines, 500ms timeout each). Persists all discovered devices to a JSON cache file so previously seen TVs appear instantly on next launch. |
-| `SettingsManager.kt` | Persists settings via DataStore (host, port, command, auto-execute, selected preset). Built-in presets ("Universal Default", "SmartTube", "Send to TV Downloads", "APK Installer") plus user custom presets via SharedPreferences JSON. Supports JSON export/import. |
+| `TvDiscoveryService.kt` | Dual-tier TV discovery with a strict 7-second hard timeout (v2.2.0). Tier 1: mDNS via `NsdManager` scanning `_adb-tls-connect._tcp`. Tier 2: if mDNS finds nothing in 3s, concurrent subnet sweep of `/24` on port 5555 (50 coroutines, 500ms timeout each). Each freshly discovered device triggers a non-blocking `settings get global device_name` shell (with `getprop ro.product.model` fallback) to replace placeholder names with the true TV device name. Persists all discovered devices to a JSON cache file so previously seen TVs appear instantly on next launch. |
+| `SettingsManager.kt` | Persists settings via DataStore (host, port, command, auto-execute, selected preset). Built-in presets (v2.2.0: purged "Universal Default" / Cx Player, "Send to TV Downloads", "APK Installer" — only "SmartTube" remains) plus user custom presets via SharedPreferences JSON. Supports JSON export/import. |
 | `FileServer.kt` | Embedded HTTP server for streaming local `content://` URIs to the TV. Supports Range requests for video seeking. Auto-timeout after 10 minutes. |
 | `CommandLogStore.kt` | Persistent execution log storage with timestamps and success/failure status. |
 | `App.kt` | Installs Conscrypt TLS provider at position 1 for ADB TLS 1.3 support. |

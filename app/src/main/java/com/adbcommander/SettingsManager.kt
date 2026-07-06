@@ -30,10 +30,15 @@ class SettingsManager(private val context: Context) {
 
         const val DEFAULT_TV_HOST = ""
         const val DEFAULT_TV_PORT = 5555
-        const val DEFAULT_COMMAND = """am start -a android.intent.action.VIEW -d {URL} -t {MIME} com.cxinventor.file.explorer"""
+        // v2.2.0: Default command is now package-agnostic (no Cx Player component).
+        // Lets the TV's own intent resolver pick the handler for the MIME type.
+        const val DEFAULT_COMMAND = """am start -a android.intent.action.VIEW -d {URL} -t {MIME}"""
         const val DEFAULT_AUTO_EXECUTE = false
         const val CONTENT_TYPE_URL = "url"
         const val CONTENT_TYPE_FILE = "file"
+
+        // v2.2.0: The default preset name (used when none is persisted).
+        const val DEFAULT_PRESET_NAME = "SmartTube"
 
         // ── Preset constants ─────────────────────────────────────────
         private const val PRESETS_PREFS_NAME = "adb_commander_presets"
@@ -42,11 +47,11 @@ class SettingsManager(private val context: Context) {
         // Built-in presets — bare {URL}/{MIME}/{FILE} placeholders, NO surrounding quotes.
         // shellEscape() in AdbManager adds single quotes at runtime.
         // stripQuotesAroundToken() strips any accidental quotes before escaping.
+        //
+        // v2.2.0: Purged "Universal Default" (Cx Player / com.cxinventor.file.explorer),
+        // "Send to TV Downloads", and "APK Installer" per cleanup pass.
         val BUILT_IN_PRESETS = listOf(
-            Preset("Universal Default", """am start -a android.intent.action.VIEW -d {URL} -t {MIME} com.cxinventor.file.explorer"""),
-            Preset("SmartTube", """am start -a android.intent.action.VIEW -d {URL} -n org.smarttube.stable/com.liskovsoft.smartyoutubetv2.tv.ui.main.SplashActivity"""),
-            Preset("Send to TV Downloads", """am start -a android.intent.action.VIEW -d {URL} -t application/octet-stream"""),
-            Preset("APK Installer", """am start -a android.intent.action.VIEW -d {URL} -t application/vnd.android.package-archive com.google.android.packageinstaller""")
+            Preset("SmartTube", """am start -a android.intent.action.VIEW -d {URL} -n org.smarttube.stable/com.liskovsoft.smartyoutubetv2.tv.ui.main.SplashActivity""")
         )
     }
 
@@ -64,7 +69,7 @@ class SettingsManager(private val context: Context) {
     val tvPort = context.dataStore.data.map { it[KEY_TV_PORT] ?: DEFAULT_TV_PORT }
     val defaultCommand = context.dataStore.data.map { it[KEY_DEFAULT_COMMAND] ?: DEFAULT_COMMAND }
     val autoExecute = context.dataStore.data.map { it[KEY_AUTO_EXECUTE] ?: DEFAULT_AUTO_EXECUTE }
-    val selectedPreset = context.dataStore.data.map { it[KEY_SELECTED_PRESET] ?: "Universal Default" }
+    val selectedPreset = context.dataStore.data.map { it[KEY_SELECTED_PRESET] ?: DEFAULT_PRESET_NAME }
     val contentType = context.dataStore.data.map { it[KEY_CONTENT_TYPE] ?: CONTENT_TYPE_URL }
     val selectedTvName = context.dataStore.data.map { it[KEY_SELECTED_TV_NAME] ?: "" }
 

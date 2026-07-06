@@ -5,14 +5,15 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
 import android.util.Log
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -39,16 +40,24 @@ import java.util.concurrent.atomic.AtomicInteger
  *   ADB port. Each address is TCP-probed with a 500ms timeout, 50 coroutines in
  *   flight at a time, so the whole sweep completes in roughly 5-10 seconds.
  *
+ * Friendly-name enrichment (v2.2.0)
+ *   Both tiers initially register devices with a placeholder name (the mDNS
+ *   service name or an `Android TV (host)` string). For every freshly-discovered
+ *   device we instantly kick off a non-blocking background ADB shell that runs
+ *   `settings get global device_name` (falling back to `getprop ro.product.model`)
+ *   and replaces the placeholder with the real friendly name when it returns.
+ *
  * Caching
  *   Every successfully discovered device is persisted to a JSON file in the app's
  *   internal storage directory. On the next [discover] call, cached devices are
  *   emitted immediately so the UI can populate instantly while a fresh scan runs.
  *
- * Concurrency
- *   [discover] returns a cold [Flow]. Collecting it starts both mDNS and (if
- *   needed) subnet sweep. Cancelling the collection stops mDNS discovery and
- *   every sweep coroutine — safe to call from `lifecycleScope.launch` and cancel
- *   on `onDispose`.
+ * Hard timeout (v2.2.0)
+ *   [discover] enforces a strict [HARD_TIMEOUT_MS] ceiling on the entire scan.
+ *   When the deadline elapses, the flow closes itself, which triggers [awaitClose]
+ *   — that stops mDNS discovery, cancels every sweep coroutine, cancels the
+ *   cache-persist loop, and cancels any in-flight device-name fetches. No thread
+ *   leaks, no battery drain after the scan window ends.
  */
 class TvDiscoveryService(private val context: Context) {
 
@@ -71,6 +80,17 @@ class TvDiscoveryService(private val context: Context) {
         private const val SUBNET_CONCURRENCY = 50
         private const val DEFAULT_ADB_PORT = 5555
         private const val CACHE_FILE_NAME = "discovered_tvs_cache.json"
+
+        // v2.2.0: Hard ceiling on the entire discovery session. After this many
+        // milliseconds the flow closes itself, which triggers awaitClose and
+        // tears down every background coroutine (mDNS listener, subnet sweep,
+        // cache-persist loop, and any pending device-name fetches).
+        private const val HARD_TIMEOUT_MS = 7000L
+
+        // Per-device name-fetch ceiling. If the ADB shell doesn't respond within
+        // this window we leave the placeholder name in place rather than
+        // blocking the scan pipeline.
+        private const val NAME_FETCH_TIMEOUT_MS = 2500L
     }
 
     private val cacheFile = File(context.filesDir, CACHE_FILE_NAME)
@@ -78,10 +98,14 @@ class TvDiscoveryService(private val context: Context) {
 
     /**
      * Start a discovery session. Emits the merged list of (cached + freshly
-     * discovered) TVs every time a new device is found. The flow stays active
-     * (continues listening for mDNS broadcasts) until the collector cancels it.
+     * discovered) TVs every time a new device is found or a friendly name is
+     * resolved. The flow automatically terminates after [HARD_TIMEOUT_MS],
+     * tearing down mDNS + every sweep coroutine + every name-fetch coroutine.
      */
     fun discover(): Flow<List<DiscoveredTv>> = callbackFlow {
+        // Supervisor scope so a single name-fetch failure doesn't cancel siblings.
+        val fetchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
         // 1. Emit cached devices instantly so the UI is never empty.
         val cached = loadCache()
         cached.forEach { seen[it.identity] = it }
@@ -107,8 +131,10 @@ class TvDiscoveryService(private val context: Context) {
                         override fun onServiceResolved(info: NsdServiceInfo) {
                             val host = info.host?.hostAddress ?: return
                             mdnsHits.incrementAndGet()
+                            val placeholderName = info.serviceName?.takeIf { it.isNotBlank() }
+                                ?: "Android TV ($host)"
                             val tv = DiscoveredTv(
-                                name = info.serviceName ?: "Android TV ($host)",
+                                name = placeholderName,
                                 host = host,
                                 port = if (info.port > 0) info.port else DEFAULT_ADB_PORT,
                                 source = "mdns",
@@ -116,6 +142,13 @@ class TvDiscoveryService(private val context: Context) {
                             )
                             seen[tv.identity] = tv
                             trySend(emitSorted())
+
+                            // v2.2.0: instantly fire a non-blocking ADB shell
+                            // to fetch the true friendly name. The placeholder
+                            // is replaced if/when the shell returns a value.
+                            enrichDeviceName(fetchScope, host, tv.port, placeholderName) {
+                                trySend(emitSorted())
+                            }
                         }
                         override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) {
                             Log.w(TAG, "mDNS resolve failed for ${info.serviceName}: $errorCode")
@@ -145,24 +178,42 @@ class TvDiscoveryService(private val context: Context) {
                 val localIp = getLocalIpv4() ?: return@launch
                 val subnet = localIp.substringBeforeLast('.')
                 Log.d(TAG, "mDNS empty after ${MDNS_GRACE_PERIOD_MS}ms — sweeping $subnet.0/24")
-                val sweepResults = subnetSweep(subnet)
+                val sweepResults = subnetSweep(subnet, fetchScope) {
+                    trySend(emitSorted())
+                }
                 sweepResults.forEach { seen[it.identity] = it }
                 trySend(emitSorted())
                 persistCache()
             }
         }
 
-        // 4. Periodically persist the cache as mDNS keeps discovering.
+        // 4. Periodically persist the cache while the scan window is open.
+        // Cancelled automatically by awaitClose when the hard timeout fires.
         val persistJob = launch {
             while (isActive) {
-                kotlinx.coroutines.delay(5000)
+                kotlinx.coroutines.delay(2000)
                 persistCache()
             }
+        }
+
+        // 5. v2.2.0: Hard timeout — close the channel after HARD_TIMEOUT_MS.
+        // Closing the channel triggers awaitClose below, which performs the
+        // full teardown (stop mDNS, cancel sweep, cancel persist loop, cancel
+        // fetchScope, persist final cache). No background coroutine survives.
+        val hardTimeoutJob = launch {
+            kotlinx.coroutines.delay(HARD_TIMEOUT_MS)
+            Log.d(TAG, "Hard timeout (${HARD_TIMEOUT_MS}ms) reached — terminating scan")
+            persistCache()
+            close()
         }
 
         awaitClose {
             sweepJob.cancel()
             persistJob.cancel()
+            hardTimeoutJob.cancel()
+            // Cancel any in-flight device-name fetches and tear down the
+            // supervisor scope so no background coroutines outlive the scan.
+            fetchScope.cancel()
             try {
                 nsdManager.stopServiceDiscovery(discoveryListener)
             } catch (_: Exception) {}
@@ -173,9 +224,16 @@ class TvDiscoveryService(private val context: Context) {
     /**
      * Probe every address in `subnet.1..254` on the default ADB port, with
      * bounded concurrency. Returns the list of hosts that accepted a TCP
-     * connection within [SUBNET_PROBE_TIMEOUT_MS].
+     * connection within [SUBNET_PROBE_TIMEOUT_MS]. Each live host is also
+     * queued for friendly-name enrichment via [enrichDeviceName]; the
+     * [onResolved] callback is invoked after each successful name fetch so
+     * the caller can re-emit the updated list to the channel.
      */
-    private suspend fun subnetSweep(subnet: String): List<DiscoveredTv> = withContext(Dispatchers.IO) {
+    private suspend fun CoroutineScope.subnetSweep(
+        subnet: String,
+        fetchScope: CoroutineScope,
+        onResolved: () -> Unit
+    ): List<DiscoveredTv> = withContext(Dispatchers.IO) {
         val results = ConcurrentHashMap<String, DiscoveredTv>()
         val semaphore = kotlinx.coroutines.sync.Semaphore(SUBNET_CONCURRENCY)
         val jobs = (1..254).map { i ->
@@ -184,13 +242,20 @@ class TvDiscoveryService(private val context: Context) {
                 try {
                     val host = "$subnet.$i"
                     if (probeHost(host, DEFAULT_ADB_PORT)) {
-                        results[host] = DiscoveredTv(
-                            name = "Android TV ($host)",
+                        val placeholder = "Android TV ($host)"
+                        val tv = DiscoveredTv(
+                            name = placeholder,
                             host = host,
                             port = DEFAULT_ADB_PORT,
                             source = "scan",
                             lastSeen = System.currentTimeMillis()
                         )
+                        // v2.2.0 bugfix: original code had a corrupted LHS
+                        // (`resultsost] = ...`) that prevented compilation.
+                        results[host] = tv
+                        // Fire-and-forget name enrichment on the supervisor scope
+                        // so it doesn't block the sweep pipeline.
+                        enrichDeviceName(fetchScope, host, DEFAULT_ADB_PORT, placeholder, onResolved)
                     }
                 } finally {
                     semaphore.release()
@@ -199,6 +264,64 @@ class TvDiscoveryService(private val context: Context) {
         }
         jobs.forEach { it.join() }
         results.values.toList()
+    }
+
+    /**
+     * v2.2.0: Fetch the true friendly name of a discovered device via a fast,
+     * non-blocking ADB shell. Tries `settings get global device_name` first
+     * (returns the user-set name shown in TV settings), and falls back to
+     * `getprop ro.product.model` (returns the marketing model name) if the
+     * first command returns empty/error.
+     *
+     * Runs on the supervisor scope [fetchScope] so:
+     *  • a single failure doesn't cancel sibling fetches
+     *  • if the scan terminates before the fetch returns, the supervisor is
+     *    cancelled by awaitClose and this coroutine is torn down with it
+     *  • the parent scan pipeline never blocks waiting for the result
+     *
+     * On success, the device's entry in [seen] is updated with the new name
+     * and [onResolved] is invoked so the caller can push a fresh emission to
+     * the active channel.
+     */
+    private fun enrichDeviceName(
+        fetchScope: CoroutineScope,
+        host: String,
+        port: Int,
+        placeholder: String,
+        onResolved: () -> Unit
+    ) {
+        fetchScope.launch {
+            try {
+                val primary = withContext(Dispatchers.IO) {
+                    kotlinx.coroutines.withTimeoutOrNull(NAME_FETCH_TIMEOUT_MS) {
+                        val r = AdbManager.executeShell(context, host, port, "settings get global device_name")
+                        r.getOrDefault("").trim()
+                    }
+                }
+                val resolved = when {
+                    !primary.isNullOrBlank() && !primary.equals("null", ignoreCase = true) -> primary
+                    else -> {
+                        val fallback = withContext(Dispatchers.IO) {
+                            kotlinx.coroutines.withTimeoutOrNull(NAME_FETCH_TIMEOUT_MS) {
+                                val r = AdbManager.executeShell(context, host, port, "getprop ro.product.model")
+                                r.getOrDefault("").trim()
+                            }
+                        }
+                        fallback?.takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
+                    }
+                }
+                if (resolved != null && resolved.isNotBlank()) {
+                    val existing = seen[host] ?: return@launch
+                    // Don't overwrite a real name with a placeholder again.
+                    if (existing.name != placeholder && existing.name != "Android TV ($host)") return@launch
+                    seen[host] = existing.copy(name = resolved, lastSeen = System.currentTimeMillis())
+                    Log.d(TAG, "Resolved device name for $host → $resolved")
+                    onResolved()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Name fetch failed for $host: ${e.message}")
+            }
+        }
     }
 
     private suspend fun probeHost(host: String, port: Int): Boolean = withContext(Dispatchers.IO) {
@@ -308,5 +431,34 @@ class TvDiscoveryService(private val context: Context) {
     fun clearCache() {
         seen.clear()
         persistCache()
+    }
+
+    /**
+     * v2.2.0: Public helper for one-shot, non-blocking device-name resolution.
+     * Used by [MainActivity] when the user taps a device to immediately look up
+     * its friendly name (without waiting for the next scan window).
+     *
+     * Returns the resolved name or null on timeout/failure. Safe to call from
+     * any coroutine scope — never blocks the calling thread.
+     */
+    suspend fun resolveDeviceName(host: String, port: Int): String? = withContext(Dispatchers.IO) {
+        try {
+            val primary = kotlinx.coroutines.withTimeoutOrNull(NAME_FETCH_TIMEOUT_MS) {
+                AdbManager.executeShell(context, host, port, "settings get global device_name")
+                    .getOrDefault("").trim()
+            }
+            when {
+                !primary.isNullOrBlank() && !primary.equals("null", ignoreCase = true) -> primary
+                else -> {
+                    val fallback = kotlinx.coroutines.withTimeoutOrNull(NAME_FETCH_TIMEOUT_MS) {
+                        AdbManager.executeShell(context, host, port, "getprop ro.product.model")
+                            .getOrDefault("").trim()
+                    }
+                    fallback?.takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
+                }
+            }
+        } catch (_: Exception) {
+            null
+        }
     }
 }

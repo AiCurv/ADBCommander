@@ -52,8 +52,28 @@ class ShareReceiverActivity : ComponentActivity() {
     private var sharedFileName: String? = null
     private var isResolving by mutableStateOf(true)
 
+    /**
+     * v2.2.0: Mode forced by which activity-alias the system routed through.
+     *  - null  → fall back to the persisted auto-execute setting (legacy path)
+     *  - true  → alias .ShareReceiverAuto   → skip dialog, fire saved preset
+     *  - false → alias .ShareReceiverManual → always show the verification dialog
+     */
+    private var forcedAutoExecute: Boolean? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Detect which alias the share sheet used to launch us. The system
+        // sets the Intent's component to the alias class name (not the target
+        // activity name), so we can distinguish Manual vs Auto reliably.
+        val aliasName = intent?.component?.className
+        forcedAutoExecute = when {
+            aliasName == null -> null
+            aliasName.endsWith(".ShareReceiverAuto") -> true
+            aliasName.endsWith(".ShareReceiverManual") -> false
+            else -> null
+        }
+        Log.d(TAG, "Launched via alias: $aliasName → forcedAutoExecute=$forcedAutoExecute")
 
         // Show the UI immediately with a loading indicator while we resolve
         // the shared content on a background thread. This prevents the
@@ -82,6 +102,7 @@ class ShareReceiverActivity : ComponentActivity() {
                         sharedFileUri = sharedFileUri,
                         sharedFileMimeType = sharedFileMimeType,
                         sharedFileName = sharedFileName,
+                        forcedAutoExecute = forcedAutoExecute,
                         onDismiss = { finish() }
                     )
                 }
@@ -180,6 +201,7 @@ fun ShareReceiverDialog(
     sharedFileUri: Uri?,
     sharedFileMimeType: String?,
     sharedFileName: String?,
+    forcedAutoExecute: Boolean? = null,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -193,7 +215,11 @@ fun ShareReceiverDialog(
     var isError by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
-        val autoExecute = settings.getAutoExecute()
+        // v2.2.0: Alias-forced mode takes precedence over the persisted setting.
+        //  - forcedAutoExecute = true  → always auto-fire (ShareReceiverAuto alias)
+        //  - forcedAutoExecute = false → always show the manual dialog (ShareReceiverManual alias)
+        //  - forcedAutoExecute = null  → fall back to the saved auto-execute toggle
+        val autoExecute = forcedAutoExecute ?: settings.getAutoExecute()
         if (autoExecute && presets.isNotEmpty()) {
             val selectedPresetName = settings.getSelectedPreset()
             val preset = presets.find { it.name == selectedPresetName } ?: presets.first()

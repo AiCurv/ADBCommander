@@ -48,7 +48,8 @@ class MainActivity : ComponentActivity() {
         // here. Auto-prompting on every cold start blocks the Main thread with a
         // system Intent and was the #1 cause of launch latency. The user now
         // triggers it on demand from the premium "Background Service & Battery"
-        // card in the Settings tab — see [SettingsTab].
+        // card in the Settings sheet (v2.2.0: opened via the Gear IconButton
+        // in the TopAppBar) — see [SettingsSheet].
         enableEdgeToEdge()
         setContent {
             ADBCommanderTheme {
@@ -63,38 +64,31 @@ class MainActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen() {
-    var selectedTab by remember { mutableIntStateOf(0) }
-    val tabs = listOf("Connection", "Settings")
+    // v2.2.0: Bottom navigation bar deleted. The screen is now a single
+    // Connection tab. All configurations previously housed in the Settings
+    // tab are reachable via the Gear IconButton in the TopAppBar, which
+    // opens a ModalBottomSheet overlay (see SettingsSheet).
+    var showSettingsSheet by remember { mutableStateOf(false) }
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("ADB Commander") },
+                actions = {
+                    IconButton(onClick = { showSettingsSheet = true }) {
+                        Icon(
+                            Icons.Filled.Settings,
+                            contentDescription = "Settings",
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primaryContainer,
                     titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
                 )
             )
-        },
-        bottomBar = {
-            NavigationBar {
-                tabs.forEachIndexed { index, title ->
-                    NavigationBarItem(
-                        selected = selectedTab == index,
-                        onClick = { selectedTab = index },
-                        icon = {
-                            Icon(
-                                when (index) {
-                                    0 -> Icons.Filled.Link
-                                    else -> Icons.Filled.Settings
-                                },
-                                contentDescription = null
-                            )
-                        },
-                        label = { Text(title) }
-                    )
-                }
-            }
         }
     ) { innerPadding ->
         Column(
@@ -102,10 +96,22 @@ fun MainScreen() {
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            when (selectedTab) {
-                0 -> ConnectionTab()
-                1 -> SettingsTab()
-            }
+            ConnectionTab()
+        }
+    }
+
+    // v2.2.0: Settings overlay sheet — replaces the old Settings tab.
+    // Contains Background Service & Battery, Package Manager, Backup & Restore,
+    // and Execution Logs. Dismissed by tap-outside, swipe-down, or the X button.
+    if (showSettingsSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showSettingsSheet = false },
+            sheetState = sheetState,
+            dragHandle = { BottomSheetDefaults.DragHandle() }
+        ) {
+            SettingsSheet(
+                onClose = { showSettingsSheet = false }
+            )
         }
     }
 }
@@ -143,7 +149,7 @@ fun ConnectionTab() {
     // Custom presets are loaded async in [LaunchedEffect] below so the UI
     // renders instantly without blocking on SharedPreferences reads.
     var presets by remember { mutableStateOf(SettingsManager.BUILT_IN_PRESETS) }
-    var selectedPresetName by remember { mutableStateOf("Universal Default") }
+    var selectedPresetName by remember { mutableStateOf(SettingsManager.DEFAULT_PRESET_NAME) }
     var presetExpanded by remember { mutableStateOf(false) }
 
     var showSaveDialog by remember { mutableStateOf(false) }
@@ -264,8 +270,8 @@ fun ConnectionTab() {
                     settings.deleteCustomPreset(presetToDelete!!)
                     presets = settings.getAllPresets()
                     if (selectedPresetName == presetToDelete) {
-                        selectedPresetName = "Universal Default"
-                        customCommand = settings.getPresetCommand("Universal Default") ?: SettingsManager.DEFAULT_COMMAND
+                        selectedPresetName = SettingsManager.DEFAULT_PRESET_NAME
+                        customCommand = settings.getPresetCommand(SettingsManager.DEFAULT_PRESET_NAME) ?: SettingsManager.DEFAULT_COMMAND
                         scope.launch {
                             settings.setSelectedPreset(selectedPresetName)
                             settings.setDefaultCommand(customCommand)
@@ -684,12 +690,13 @@ fun ConnectionTab() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  SETTINGS TAB — Package Manager + Backup & Restore + Execution Logs
+//  SETTINGS SHEET (v2.2.0) — Package Manager + Backup & Restore + Execution Logs
+//  Rendered inside a ModalBottomSheet opened from the TopAppBar Gear IconButton.
 // ═══════════════════════════════════════════════════════════════════════
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsTab() {
+fun SettingsSheet(onClose: () -> Unit) {
     val context = LocalContext.current
     val settings = remember { SettingsManager(context) }
     val scope = rememberCoroutineScope()
@@ -908,11 +915,37 @@ fun SettingsTab() {
 
     Column(
         modifier = Modifier
-            .fillMaxSize()
+            .fillMaxWidth()
             .verticalScroll(rememberScrollState())
-            .padding(16.dp),
+            .padding(horizontal = 16.dp)
+            // Bottom padding accounts for the ModalBottomSheet's nav-bar inset
+            // plus the extra breathing room Material3 sheets add by default.
+            .padding(top = 4.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        // ── Sheet header: title + close button ─────────────────────────
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Filled.Settings,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(24.dp)
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(
+                "Settings",
+                style = MaterialTheme.typography.headlineSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.weight(1f)
+            )
+            IconButton(onClick = onClose) {
+                Icon(Icons.Filled.Close, contentDescription = "Close settings")
+            }
+        }
+
         // ═══════════════════════════════════════════════════════════════
         //  BACKGROUND SERVICE & BATTERY OPTIMIZATION — Card (v2.0.0)
         // ═══════════════════════════════════════════════════════════════

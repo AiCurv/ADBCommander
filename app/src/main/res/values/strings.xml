@@ -1,6 +1,10 @@
 <resources>
     <string name="app_name">ADB Commander</string>
 
+    <!-- Dual share-sheet targets (v2.2.0) -->
+    <string name="share_label_manual">ADB Commander (Manual)</string>
+    <string name="share_label_auto">ADB Commander (Auto-Execute)</string>
+
     <!-- Foreground service notification -->
     <string name="notification_channel_name">ADB TV Bridge</string>
     <string name="notification_channel_desc">Persistent background bridge to your Android TV</string>
