@@ -110,5 +110,36 @@
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
             </intent-filter>
         </service>
+
+        <!--
+          v2.2.1 Preset Quick Settings tile. Tap → launches a transparent
+          overlay (PresetPickerActivity) showing all custom saved user
+          presets simultaneously. Selecting one locks it as the auto-execute
+          profile and updates this tile's subtitle dynamically.
+        -->
+        <service
+            android:name=".AdbPresetTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_tile"
+            android:label="@string/tile_preset_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <!--
+          v2.2.1 Transparent overlay activity launched from the Preset
+          Quick Settings tile. Renders a dropdown-style panel of all
+          custom saved presets. Tapping one locks it as the auto-execute
+          profile; tapping outside dismisses.
+        -->
+        <activity
+            android:name=".PresetPickerActivity"
+            android:exported="false"
+            android:theme="@style/Theme.ADBCommander.Transparent"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:noHistory="true" />
     </application>
 </manifest>

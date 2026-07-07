@@ -2,7 +2,7 @@
 
 Android app (Kotlin + Jetpack Compose) that appears in the system Share menu for **all file types** — photos, videos, audio, text, documents, and any other files. Users define custom ADB shell commands with `{URL}`, `{MIME}`, and `{FILE}` placeholders, connect to Android TV over Wireless ADB, and execute commands directly from the phone. No PC required.
 
-## Architecture (v2.2.0)
+## Architecture (v2.2.1)
 
 ADB Commander uses a manual-connection, on-demand architecture, optionally backed by a **persistent foreground service** (`AdbForegroundService`) that keeps the process warm in the background so share-sheet executions launch with zero cold-start lag. TVs are discovered automatically via a **dual-tier network scanner** (`TvDiscoveryService`) — no IP typing required. The user taps a discovered device name, and all subsequent command executions use fresh ADB connections that open, run, and close automatically. This eliminates stale-socket and auto-reconnect bugs entirely.
 
@@ -22,12 +22,20 @@ The bottom navigation bar has been removed. The app is now a **single Connection
 
 ### Dual Share-Sheet Targets (v2.2.0)
 
-Two distinct `activity-alias` entries in `AndroidManifest.xml` make ADB Commander appear as **two separate share targets** in the native Android share menu:
+Two distinct `activity-alias` entries in `AndroidManifest.xml` make ADB Commander appear as **two separate share targets** in the native Android share menu (v2.2.1: labels shortened for density):
 
-- **ADB Commander (Manual)** — opens the interactive verification dialog so the user can pick a preset before firing the command.
-- **ADB Commander (Auto-Execute)** — skips the dialog and immediately fires the saved preset to the TV background pipeline.
+- **ADB Manual** — opens the interactive verification dialog so the user can pick a preset before firing the command.
+- **ADB Auto** — skips the dialog and immediately fires the saved preset to the TV background pipeline.
 
 `ShareReceiverActivity` inspects `intent.component.className` to detect which alias the system routed through and forces the corresponding mode, overriding the persisted auto-execute setting.
+
+### Preset Quick Settings Tile (v2.2.1)
+
+A second Quick Settings tile (`AdbPresetTileService`) lets the user lock the auto-execute preset directly from the notification shade — no app launch required. Tapping the tile launches a transparent overlay activity (`PresetPickerActivity`) that displays all custom saved user presets simultaneously in a dropdown-style panel anchored to the top of the screen. Selecting a preset instantly locks it as the primary auto-execute profile (via `SettingsManager.setSelectedPreset`) and updates the tile's subtitle dynamically to reflect the active lock. The tile's state is `STATE_ACTIVE` when a preset is locked, `STATE_INACTIVE` otherwise.
+
+### Global Preset Query Layer (v2.2.1)
+
+The preset SharedPreferences is now bound globally at process startup via `SettingsManager.preload(context)` called from `App.onCreate()`. This fixes the v2.2.0 regression where custom saved presets did not surface to background intent processors (ShareReceiverActivity cold-started from the share sheet, AdbPresetTileService) when MainActivity had never been opened in the current process. All preset writes now use `commit()` (synchronous) instead of `apply()` (async) so that the very next read from any entry point is guaranteed to see the new preset list.
 
 ### Core Files
 

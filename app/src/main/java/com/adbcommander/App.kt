@@ -18,5 +18,13 @@ class App : Application() {
         // Install Conscrypt as the first security provider
         // This enables TLS 1.3 for ADB pairing on all Android versions
         Security.insertProviderAt(Conscrypt.newProvider(), 1)
+
+        // v2.2.1: Bind the global preset SharedPreferences from the
+        // application context so that background intent processors
+        // (ShareReceiverActivity cold-started from the share sheet,
+        // AdbPresetTileService) see the same custom presets that
+        // MainActivity saved — no per-Activity lazy init, no stale reads.
+        // See developer-context.md §2.2 and SettingsManager.preload().
+        SettingsManager.preload(this)
     }
 }

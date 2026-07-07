@@ -153,3 +153,31 @@ Stage Summary:
 - Zero executable code changes — pure documentation pass. Build should remain green.
 - Commit: docs-developer-context-and-ai-inline-guardrails, version stays at v2.2.0 / code 31.
 - Build delegated to GitHub Actions CI — no local compilation attempted.
+
+---
+Task ID: 12
+Agent: Main Agent
+Task: Step 12 — fix-preset-visibility-and-add-dropdown-preset-tile (v2.2.1-stable)
+
+Work Log:
+- SettingsManager.kt: Fixed the regression where custom saved presets did not surface to background intent processors (ShareReceiverActivity cold-started from the share sheet, AdbPresetTileService). Root cause: `presetsPrefs` was a per-instance `by lazy { context.getSharedPreferences(...) }` property, so every new `SettingsManager(context)` constructed its own lazy holder. Combined with `apply()` (async writes), background intent processors could read stale/empty preset lists when MainActivity had never been opened in the current process.
+  • Added a `companion object`-level `globalPresetsPrefs: SharedPreferences?` (volatile, double-checked-locked) bound from the application context.
+  • Added `SettingsManager.preload(context)` — called from `App.onCreate()` so the binding exists before any Activity or Service touches the preset layer.
+  • Added `presetsPrefs(context)` private helper that returns the global instance (with defensive on-demand initialization for entry points that fire before App.onCreate completes).
+  • Switched `saveCustomPresets()` from `apply()` to `commit()` so the very next read from a background intent processor is guaranteed to see the new preset list.
+  • All `loadCustomPresets()` / `saveCustomPresets()` / `getAllPresets()` / `saveCustomPreset()` / `deleteCustomPreset()` / `getPresetCommand()` / `exportPresetsJson()` / `importPresetsJson()` now route through the global helper.
+- App.kt: Added `SettingsManager.preload(this)` in `onCreate()` immediately after the Conscrypt install. This guarantees the global SharedPreferences binding is in place before any entry point (Activity, Service, or TileService) reads presets.
+- AndroidManifest.xml: Renamed user-facing share-sheet labels via strings.xml — `share_label_manual` is now "ADB Manual" (was "ADB Commander (Manual)"), `share_label_auto` is now "ADB Auto" (was "ADB Commander (Auto-Execute)"). Shorter labels read better in the dense native share menu and align with the v2.2.1 visibility streamlining pass.
+- strings.xml: Added four new strings for the v2.2.1 preset tile — `tile_preset_label` ("ADB Preset"), `tile_preset_subtitle_none` ("No preset locked"), `preset_picker_title` ("Lock auto-execute preset"), `preset_picker_empty` ("No custom presets saved. Open ADB Manual to create one.").
+- AdbPresetTileService.kt (new): Quick Settings tile that lets the user lock the auto-execute preset from the notification shade. On tap, launches PresetPickerActivity via PendingIntent (Android 14+) or raw Intent (older) using `startActivityAndCollapse`. On `onStartListening`, refreshes the tile label ("ADB Preset"), subtitle (currently-locked preset name, or "No preset locked" — API 29+ only, gracefully degrades on older devices), state (STATE_ACTIVE when a preset is locked, STATE_INACTIVE otherwise), and content description. All DataStore reads use `runBlocking` on the binder thread (safe — TileService callbacks never run on Main).
+- PresetPickerActivity.kt (new): Transparent overlay activity launched from AdbPresetTileService. Renders a dropdown-style Surface anchored to the top-center of the screen with a translucent scrim behind it. Shows ALL custom saved user presets (built-ins excluded per the user instruction) in a scrollable column of clickable rows. Each row shows a check-circle/radio-unchecked icon (depending on whether it's the currently-locked preset), the preset name, the command template preview (monospace, truncated), and {URL}/{FILE} token badges. Tapping a row locks it via `SettingsManager.setSelectedPreset()` + syncs `setDefaultCommand()` so ShareReceiverActivity's auto-execute path picks it up immediately, then shows a confirmation Toast and finishes. Tapping the scrim dismisses. All SettingsManager suspend calls run on Dispatchers.IO via lifecycleScope; the preset list loads via LaunchedEffect with an initial loading spinner.
+- AndroidManifest.xml: Registered AdbPresetTileService with `BIND_QUICK_SETTINGS_TILE` permission and `QS_TILE` intent-filter. Registered PresetPickerActivity with the transparent theme (`Theme.ADBCommander.Transparent`), `excludeFromRecents`, empty task affinity, and `noHistory` so it never leaves a trace in the Recents list.
+- build.gradle.kts: bumped versionCode 31 → 32, versionName 2.2.0 → 2.2.1.
+- All threading and layout modifications respect the guardrails in developer-context.md §2.2 (background IO threading — preset reads use the global SharedPreferences layer with on-demand defensive init; preset writes use `commit()` for synchronous persistence; all DataStore operations remain suspend and run on Dispatchers.IO).
+
+Stage Summary:
+- 2 new files: AdbPresetTileService.kt (QS tile that launches the picker overlay + refreshes tile subtitle on lock), PresetPickerActivity.kt (transparent overlay with dropdown-style panel of all custom saved presets).
+- 5 modified files: SettingsManager.kt (companion-level global SharedPreferences + preload() + commit() writes), App.kt (calls SettingsManager.preload in onCreate), AndroidManifest.xml (shortened alias labels + registered new tile + new activity), strings.xml (renamed alias labels + 4 new preset-tile strings), build.gradle.kts (version bump).
+- 3 user requirements satisfied: (1) preset visibility regression fixed via global SharedPreferences binding, (2) share-sheet labels shortened to "ADB Auto" / "ADB Manual", (3) new AdbPresetTileService with dropdown overlay that locks the auto-execute preset and updates tile subtitle dynamically.
+- Commit: fix-preset-visibility-and-add-dropdown-preset-tile, version v2.2.1 / code 32.
+- Build delegated to GitHub Actions CI — no local compilation attempted.

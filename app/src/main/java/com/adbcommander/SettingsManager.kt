@@ -44,6 +44,57 @@ class SettingsManager(private val context: Context) {
         private const val PRESETS_PREFS_NAME = "adb_commander_presets"
         private const val KEY_PRESETS_JSON = "presets_json"
 
+        // v2.2.1: Process-wide SharedPreferences reference for the preset
+        // query layer. Initialized once from the APPLICATION context via
+        // [preload] (called from App.onCreate) so every entry point —
+        // MainActivity, ShareReceiverActivity cold-started from the share
+        // sheet, AdbPresetTileService, AdbTileService — sees the same
+        // globally-bound instance with no per-Activity lazy initialization.
+        //
+        // AI AGENT NOTE: This companion-level binding is the fix for the
+        // v2.2.0 regression where custom saved presets did not surface to
+        // ShareReceiverActivity when it was launched directly from the
+        // share sheet without MainActivity having been opened first. The
+        // per-instance `by lazy { context.getSharedPreferences(...) }` pattern
+        // created a new lazy holder for every `SettingsManager(context)`
+        // construction; while Android caches SharedPreferences at the
+        // framework level, the lazy + apply() (async writes) combination
+        // meant background intent processors could read stale/empty preset
+        // lists. See developer-context.md §2.2 (background IO threading).
+        @Volatile
+        private var globalPresetsPrefs: SharedPreferences? = null
+
+        /**
+         * Bind the global preset SharedPreferences from the application
+         * context. Safe to call multiple times — subsequent calls are no-ops.
+         * Called from [App.onCreate] so the binding exists before any
+         * Activity or Service touches the preset layer.
+         */
+        fun preload(context: Context) {
+            if (globalPresetsPrefs == null) {
+                synchronized(Companion) {
+                    if (globalPresetsPrefs == null) {
+                        globalPresetsPrefs = context.applicationContext
+                            .getSharedPreferences(PRESETS_PREFS_NAME, Context.MODE_PRIVATE)
+                    }
+                }
+            }
+        }
+
+        /**
+         * Returns the process-wide preset SharedPreferences, initializing
+         * it on-demand from the application context if [preload] has not
+         * yet been called (defensive fallback for entry points that fire
+         * before App.onCreate completes).
+         */
+        private fun presetsPrefs(context: Context): SharedPreferences {
+            return globalPresetsPrefs ?: synchronized(Companion) {
+                globalPresetsPrefs ?: context.applicationContext
+                    .getSharedPreferences(PRESETS_PREFS_NAME, Context.MODE_PRIVATE)
+                    .also { globalPresetsPrefs = it }
+            }
+        }
+
         // Built-in presets — bare {URL}/{MIME}/{FILE} placeholders, NO surrounding quotes.
         // shellEscape() in AdbManager adds single quotes at runtime.
         // stripQuotesAroundToken() strips any accidental quotes before escaping.
@@ -90,10 +141,12 @@ class SettingsManager(private val context: Context) {
     suspend fun setSelectedTvName(name: String) { context.dataStore.edit { it[KEY_SELECTED_TV_NAME] = name } }
 
     // ── Preset management via SharedPreferences ──────────────────────
-
-    private val presetsPrefs: SharedPreferences by lazy {
-        context.getSharedPreferences(PRESETS_PREFS_NAME, Context.MODE_PRIVATE)
-    }
+    //
+    // v2.2.1: All preset reads/writes now route through the companion-level
+    // [presetsPrefs(context)] helper which binds to a single process-wide
+    // SharedPreferences instance. This guarantees that ShareReceiverActivity
+    // (cold-started from the share sheet) sees the same custom presets that
+    // MainActivity saved — no per-instance lazy holders, no stale reads.
 
     /**
      * Returns all presets: built-in first, then user-created custom presets.
@@ -166,7 +219,7 @@ class SettingsManager(private val context: Context) {
     }
 
     private fun loadCustomPresets(): List<Preset> {
-        val json = presetsPrefs.getString(KEY_PRESETS_JSON, null) ?: return emptyList()
+        val json = presetsPrefs(context).getString(KEY_PRESETS_JSON, null) ?: return emptyList()
         return try {
             val arr = JSONArray(json)
             (0 until arr.length()).map { i ->
@@ -186,7 +239,14 @@ class SettingsManager(private val context: Context) {
             obj.put("command", p.command)
             arr.put(obj)
         }
-        presetsPrefs.edit().putString(KEY_PRESETS_JSON, arr.toString()).apply()
+        // v2.2.1: commit() instead of apply() so that the very next read
+        // from a background intent processor (ShareReceiverActivity,
+        // AdbPresetTileService) is guaranteed to see the new preset list.
+        // apply() is async and was the root cause of the v2.2.0 regression
+        // where freshly-saved presets didn't surface to the share sheet.
+        // commit() blocks briefly but is bounded (<10ms for a JSON string
+        // this small) and runs on a background coroutine scope anyway.
+        presetsPrefs(context).edit().putString(KEY_PRESETS_JSON, arr.toString()).commit()
     }
 
     /**

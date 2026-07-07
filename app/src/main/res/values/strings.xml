@@ -1,9 +1,15 @@
 <resources>
     <string name="app_name">ADB Commander</string>
 
-    <!-- Dual share-sheet targets (v2.2.0) -->
-    <string name="share_label_manual">ADB Commander (Manual)</string>
-    <string name="share_label_auto">ADB Commander (Auto-Execute)</string>
+    <!-- Dual share-sheet targets (v2.2.0; v2.2.1 shortened labels) -->
+    <string name="share_label_manual">ADB Manual</string>
+    <string name="share_label_auto">ADB Auto</string>
+
+    <!-- Preset Quick Settings tile (v2.2.1) -->
+    <string name="tile_preset_label">ADB Preset</string>
+    <string name="tile_preset_subtitle_none">No preset locked</string>
+    <string name="preset_picker_title">Lock auto-execute preset</string>
+    <string name="preset_picker_empty">No custom presets saved. Open ADB Manual to create one.</string>
 
     <!-- Foreground service notification -->
     <string name="notification_channel_name">ADB TV Bridge</string>
