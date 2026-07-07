@@ -86,6 +86,12 @@ class TvDiscoveryService(private val context: Context) {
         // milliseconds the flow closes itself, which triggers awaitClose and
         // tears down every background coroutine (mDNS listener, subnet sweep,
         // cache-persist loop, and any pending device-name fetches).
+        //
+        // AI AGENT NOTE: DO NOT remove or raise this timeout above 10,000ms
+        // without explicit owner sign-off. The 7-second ceiling is what
+        // prevents the scanner from running infinitely in the background and
+        // draining battery — this was the v2.1.0 production regression that
+        // v2.2.0 fixed. See developer-context.md §2.4.
         private const val HARD_TIMEOUT_MS = 7000L
 
         // Per-device name-fetch ceiling. If the ADB shell doesn't respond within
@@ -105,6 +111,12 @@ class TvDiscoveryService(private val context: Context) {
      */
     fun discover(): Flow<List<DiscoveredTv>> = callbackFlow {
         // Supervisor scope so a single name-fetch failure doesn't cancel siblings.
+        //
+        // AI AGENT NOTE: This supervisor scope MUST be cancelled in awaitClose
+        // below. Forgetting to cancel it here will leak every in-flight
+        // device-name ADB shell coroutine when the scan terminates. The
+        // SupervisorJob is intentional — a regular Job would cancel all
+        // sibling name fetches the moment one device's ADB shell timed out.
         val fetchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
         // 1. Emit cached devices instantly so the UI is never empty.
@@ -201,6 +213,12 @@ class TvDiscoveryService(private val context: Context) {
         // Closing the channel triggers awaitClose below, which performs the
         // full teardown (stop mDNS, cancel sweep, cancel persist loop, cancel
         // fetchScope, persist final cache). No background coroutine survives.
+        //
+        // AI AGENT NOTE: This hardTimeoutJob is the load-bearing safety net.
+        // If you remove it, the persistJob's `while (isActive)` loop and the
+        // mDNS listener will keep running forever — that is exactly the v2.1.0
+        // infinite-scan bug. Do NOT replace close() with channel.cancel()
+        // either; close() triggers awaitClose, cancel() does not.
         val hardTimeoutJob = launch {
             kotlinx.coroutines.delay(HARD_TIMEOUT_MS)
             Log.d(TAG, "Hard timeout (${HARD_TIMEOUT_MS}ms) reached — terminating scan")
@@ -208,6 +226,11 @@ class TvDiscoveryService(private val context: Context) {
             close()
         }
 
+        // AI AGENT NOTE: This awaitClose block is the single teardown point
+        // for the entire scan. Every background coroutine launched above MUST
+        // be cancelled here. If you add a new coroutine to discover(), add
+        // its cancellation here too — a leaked coroutine will outlive the
+        // scan window and drain battery silently.
         awaitClose {
             sweepJob.cancel()
             persistJob.cancel()
@@ -251,8 +274,19 @@ class TvDiscoveryService(private val context: Context) {
                             source = "scan",
                             lastSeen = System.currentTimeMillis()
                         )
-                        // v2.2.0 bugfix: original code had a corrupted LHS
-                        // (`resultsost] = ...`) that prevented compilation.
+                        // v2.2.0 bugfix: original v2.1.0 code had a corrupted
+                        // LHS here (looked like `results<corrupted> = tv`)
+                        // that prevented the entire project from compiling.
+                        // The intended form is `results[host] = tv` — keyed
+                        // by host IP so the ConcurrentHashMap deduplicates.
+                        //
+                        // AI AGENT NOTE: Do NOT collapse this into a direct
+                        // trySend() — the sweep results must be collected
+                        // into the `results` map first so subnetSweep() can
+                        // return a deduplicated List<DiscoveredTv> to the
+                        // caller, which then merges them into `seen` and
+                        // emits. Skipping the map causes duplicate entries
+                        // if two probe coroutines ever hit the same host.
                         results[host] = tv
                         // Fire-and-forget name enrichment on the supervisor scope
                         // so it doesn't block the sweep pipeline.
@@ -293,6 +327,14 @@ class TvDiscoveryService(private val context: Context) {
     ) {
         fetchScope.launch {
             try {
+                // AI AGENT NOTE: This is the primary device-name lookup — the
+                // user-set name shown in TV Settings → Device Preferences →
+                // About → Device name. The literal command string
+                // "settings get global device_name" must NOT be changed; it is
+                // the only Android system property that returns the user's
+                // custom name (e.g. "Living Room TV"). Substituting any other
+                // settings key or prop name will return generic model strings
+                // instead of the user-friendly label. See developer-context.md §4.
                 val primary = withContext(Dispatchers.IO) {
                     kotlinx.coroutines.withTimeoutOrNull(NAME_FETCH_TIMEOUT_MS) {
                         val r = AdbManager.executeShell(context, host, port, "settings get global device_name")
@@ -302,6 +344,13 @@ class TvDiscoveryService(private val context: Context) {
                 val resolved = when {
                     !primary.isNullOrBlank() && !primary.equals("null", ignoreCase = true) -> primary
                     else -> {
+                        // AI AGENT NOTE: Fallback to marketing model name. Some
+                        // TV ROMs (notably older Chromecast firmware) return
+                        // the literal string "null" instead of an empty string
+                        // when device_name is unset — the case-insensitive
+                        // "null" check above catches that. Do not remove the
+                        // null check or you will start showing "null" as the
+                        // device name in the UI.
                         val fallback = withContext(Dispatchers.IO) {
                             kotlinx.coroutines.withTimeoutOrNull(NAME_FETCH_TIMEOUT_MS) {
                                 val r = AdbManager.executeShell(context, host, port, "getprop ro.product.model")

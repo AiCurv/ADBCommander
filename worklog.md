@@ -130,3 +130,26 @@ Stage Summary:
 - Critical compile bug from v2.1.0 (`resultsost]` typo) fixed.
 - Commit: fix-scanner-names-single-tab-and-dual-share, version v2.2.0 / code 31.
 - Build delegated to GitHub Actions CI — no local compilation attempted.
+
+---
+Task ID: 11
+Agent: Main Agent
+Task: Step 11 — docs-developer-context-and-ai-inline-guardrails (v2.2.0-docs)
+
+Work Log:
+- Created /developer-context.md in repo root — the canonical architectural reference for ADB Commander. Eight sections: Project Identity & Philosophy, Core Constraints (NON-NEGOTIABLE — covers FileServer protection, IO threading, AdbManager backend contract, 7s timeout, single-screen UI, dual activity-alias), Token Dictionary ({URL}, {MIME}, {FILE} — exact semantics and substitution order), Device Discovery Workflow (mDNS + subnet sweep + name enrichment + hard timeout + cache), UI Architecture (MainScreen + ConnectionTab + SettingsSheet + dual share aliases), Build & CI, File Map, Change Protocol for Future AI Sessions.
+- Injected `// AI AGENT NOTE:` inline comment blocks across the 4 core structural files:
+  • MainActivity.kt: 4 notes — (a) MainScreen scaffold no-re-introduce-bottom-nav warning, (b) Gear IconButton sole-entry-point-to-settings warning, (c) ModalBottomSheet-must-remain-a-sheet warning, (d) ConnectionTab scan lifecycle binding no-leak warning, (e) RUN COMMAND scope.launch IO-threading reminder, (f) Auto-Execute toggle is now fallback-only (aliases override) note.
+  • TvDiscoveryService.kt: 6 notes — (a) HARD_TIMEOUT_MS do-not-remove warning with explicit reference to v2.1.0 regression, (b) fetchScope supervisor-scope cancellation reminder, (c) hardTimeoutJob load-bearing-safety-net warning (close() not channel.cancel()), (d) awaitClose single-teardown-point warning, (e) settings-get-global-device_name command-string-do-not-change note, (f) "null" string check warning for Chromecast firmware quirk, (g) results[host] do-not-collapse-into-trySend note.
+  • AdbManager.kt: 2 notes — (a) prepareCommand substitution-order load-bearing warning, (b) executeShell 10s read deadline do-not-raise-above-15s warning.
+  • ShareReceiverActivity.kt: 4 notes — (a) alias detection is the heart of dual share-sheet feature, do-not-replace-with-EXTRA inspection, (b) forcedAutoExecute Elvis-operator single-decision-point warning, (c) FileServer do-not-modify reminder, (d) parseSharedContent ContentResolver-query IO-threading requirement.
+- Verified file writes — no syntax compilation breaks. All annotations are inside /* */ or // comment blocks; no executable code was modified.
+- Build delegated to GitHub Actions CI — no local compilation attempted.
+
+Stage Summary:
+- 1 new file: /developer-context.md (canonical architectural reference, 8 sections, ~6KB markdown).
+- 4 modified files: MainActivity.kt (+6 AI AGENT NOTE blocks), TvDiscoveryService.kt (+7 AI AGENT NOTE blocks), AdbManager.kt (+2 AI AGENT NOTE blocks), ShareReceiverActivity.kt (+4 AI AGENT NOTE blocks).
+- 1 modified file: worklog.md (this entry).
+- Zero executable code changes — pure documentation pass. Build should remain green.
+- Commit: docs-developer-context-and-ai-inline-guardrails, version stays at v2.2.0 / code 31.
+- Build delegated to GitHub Actions CI — no local compilation attempted.

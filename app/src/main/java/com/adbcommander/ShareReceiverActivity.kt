@@ -66,6 +66,14 @@ class ShareReceiverActivity : ComponentActivity() {
         // Detect which alias the share sheet used to launch us. The system
         // sets the Intent's component to the alias class name (not the target
         // activity name), so we can distinguish Manual vs Auto reliably.
+        //
+        // AI AGENT NOTE: This alias detection is the heart of the v2.2.0 dual
+        // share-sheet feature. The two activity-alias entries in
+        // AndroidManifest.xml (.ShareReceiverManual and .ShareReceiverAuto)
+        // BOTH target this activity — the only way to know which one the user
+        // picked in the system share menu is to inspect intent.component.
+        // Do NOT replace this with EXTRA_* inspection; the system does not
+        // add any extra to differentiate aliases. See developer-context.md §2.6.
         val aliasName = intent?.component?.className
         forcedAutoExecute = when {
             aliasName == null -> null
@@ -109,7 +117,15 @@ class ShareReceiverActivity : ComponentActivity() {
             }
         }
 
-        // Resolve the shared intent off the main thread
+        // Resolve the shared intent off the main thread.
+        //
+        // AI AGENT NOTE: parseSharedContent() calls ContentResolver.query()
+        // to resolve display names from content:// URIs — this is a binder
+        // IPC that can block for hundreds of milliseconds if the source app's
+        // provider is busy. Running it on the Main thread causes the
+        // share-sheet-to-app transition to stutter, which users perceive as
+        // "ADB Commander is slow". This MUST stay on Dispatchers.IO. See
+        // developer-context.md §2.2.
         lifecycleScope.launch(Dispatchers.IO) {
             parseSharedContent()
 
@@ -219,6 +235,12 @@ fun ShareReceiverDialog(
         //  - forcedAutoExecute = true  → always auto-fire (ShareReceiverAuto alias)
         //  - forcedAutoExecute = false → always show the manual dialog (ShareReceiverManual alias)
         //  - forcedAutoExecute = null  → fall back to the saved auto-execute toggle
+        //
+        // AI AGENT NOTE: The Elvis operator (?:) here is the SINGLE decision
+        // point that reconciles the user's per-share choice with their saved
+        // preference. Do NOT collapse this into a plain `settings.getAutoExecute()`
+        // — doing so would make the dual share-sheet aliases behave identically
+        // and defeat the entire v2.2.0 feature. See developer-context.md §5.4.
         val autoExecute = forcedAutoExecute ?: settings.getAutoExecute()
         if (autoExecute && presets.isNotEmpty()) {
             val selectedPresetName = settings.getSelectedPreset()
@@ -485,7 +507,17 @@ private suspend fun executePresetSuspend(
                     val remotePath = pushResult.getOrDefault("")
                     AdbManager.prepareFileCommand(preset.command, remotePath, "", resolvedMime)
                 } else {
-                    // Preset uses {URL} — start HTTP server for streaming
+                    // Preset uses {URL} — start HTTP server for streaming.
+                    //
+                    // AI AGENT NOTE: FileServer is the in-process HTTP server
+                    // that streams content:// URIs to the TV. Per
+                    // developer-context.md §2.1, FileServer.kt itself must
+                    // NEVER be deleted or modified — the buffer geometry and
+                    // Range-request handling have been validated against real
+                    // Android TV video players. The static reference held in
+                    // ShareReceiverActivity.activeFileServer is cleared in
+                    // onDestroy() to release the port; do NOT remove that
+                    // cleanup or the server will leak across share sessions.
                     val server = FileServer(fileUri, resolvedMime, context.contentResolver)
                     ShareReceiverActivity.activeFileServer = server
                     val serverPort = server.start()

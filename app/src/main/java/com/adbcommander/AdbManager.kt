@@ -108,6 +108,11 @@ object AdbManager {
      * are stripped BEFORE substitution to prevent double-quoting artifacts
      * like ''url'' being sent to the TV.
      */
+    // AI AGENT NOTE: The substitution order is load-bearing — strip quotes
+    // BEFORE escaping, never the other way around. Swapping the order would
+    // double-escape user-entered quotes and break URLs that legitimately
+    // contain single quotes. See developer-context.md §3 "Token stripping
+    // and escaping order".
     fun prepareCommand(template: String, sharedUrl: String, mimeType: String): String {
         val escapedUrl = shellEscape(sharedUrl)
         val escapedMime = shellEscape(mimeType)
@@ -176,6 +181,13 @@ object AdbManager {
                 val buffer = ByteArray(4096)
 
                 var totalRead = 0
+                // AI AGENT NOTE: This 10-second read deadline is the ONLY thing
+                // preventing executeShell from hanging forever if the TV accepts
+                // the connection but never responds (which happens when the TV
+                // is mid-reboot, in standby, or running a long-running command
+                // like `pm install`). Do NOT raise this above 15 seconds — the
+                // share-sheet UX requires the dialog to either succeed or fail
+                // fast so the user can retry. See developer-context.md §2.2.
                 val deadline = System.currentTimeMillis() + 10000
 
                 while (System.currentTimeMillis() < deadline) {

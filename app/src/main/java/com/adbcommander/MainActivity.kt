@@ -68,6 +68,10 @@ fun MainScreen() {
     // Connection tab. All configurations previously housed in the Settings
     // tab are reachable via the Gear IconButton in the TopAppBar, which
     // opens a ModalBottomSheet overlay (see SettingsSheet).
+    //
+    // AI AGENT NOTE: Do NOT re-introduce a bottom NavigationBar, a drawer, or
+    // any additional top-level destinations. The single-screen + Gear IconButton
+    // + ModalBottomSheet architecture is intentional — see developer-context.md §2.5.
     var showSettingsSheet by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
@@ -76,6 +80,10 @@ fun MainScreen() {
             TopAppBar(
                 title = { Text("ADB Commander") },
                 actions = {
+                    // AI AGENT NOTE: This Gear IconButton is the ONLY entry point to
+                    // all configuration UI (Background Service, Package Manager,
+                    // Backup/Restore, Logs). Do not move it, hide it, or duplicate it
+                    // elsewhere. Removing it orphans the entire Settings surface.
                     IconButton(onClick = { showSettingsSheet = true }) {
                         Icon(
                             Icons.Filled.Settings,
@@ -103,6 +111,11 @@ fun MainScreen() {
     // v2.2.0: Settings overlay sheet — replaces the old Settings tab.
     // Contains Background Service & Battery, Package Manager, Backup & Restore,
     // and Execution Logs. Dismissed by tap-outside, swipe-down, or the X button.
+    //
+    // AI AGENT NOTE: The SettingsSheet MUST remain a ModalBottomSheet (not a
+    // separate Activity, not a Fragment, not a navigation destination). The
+    // sheet pattern preserves the user's Connection-screen scroll state and
+    // keeps the configuration UI dismissable with a single swipe.
     if (showSettingsSheet) {
         ModalBottomSheet(
             onDismissRequest = { showSettingsSheet = false },
@@ -184,6 +197,12 @@ fun ConnectionTab() {
     // lifecycleScope so the job is also torn down if the Activity itself
     // is destroyed. The rescan button reuses [startScan] to cancel and
     // restart the flow on demand.
+    //
+    // AI AGENT NOTE: This lifecycle binding is the ONLY thing preventing the
+    // mDNS listener + 50-coroutine subnet sweep from leaking. Do NOT move the
+    // scan to a global Application-scoped coroutine. The flow itself
+    // self-terminates after 7 seconds (see TvDiscoveryService.HARD_TIMEOUT_MS),
+    // but the explicit onDispose cancel is defense-in-depth and must stay.
     val lifecycleOwner = LocalLifecycleOwner.current
     var scanJob by remember { mutableStateOf<Job?>(null) }
 
@@ -629,6 +648,12 @@ fun ConnectionTab() {
                 if (customCommand.isBlank()) { runOutput = "Command cannot be empty"; return@Button }
                 if (tvHost.isBlank()) { runOutput = "Set TV IP first"; return@Button }
                 isRunning = true; runOutput = null
+                // AI AGENT NOTE: AdbManager.executeShell MUST be called from a
+                // coroutine scope (rememberCoroutineScope here), NOT directly
+                // from the Main thread. executeShell internally dispatches to
+                // Dispatchers.IO but the surrounding scope is what guarantees
+                // the result is delivered back to the UI thread for state
+                // updates. See developer-context.md §2.2.
                 scope.launch {
                     val result = AdbManager.executeShell(context, tvHost, tvPort, customCommand)
                     isRunning = false
@@ -672,6 +697,13 @@ fun ConnectionTab() {
         HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
         SectionHeader("Share Behavior", Icons.Filled.FastForward)
 
+        // AI AGENT NOTE: As of v2.2.0, this toggle is the FALLBACK auto-execute
+        // preference. The actual share-time behavior is determined by which
+        // activity-alias the user picks in the system share menu
+        // (ShareReceiverManual vs ShareReceiverAuto) — see
+        // ShareReceiverActivity.forcedAutoExecute. Do NOT delete this toggle;
+        // it is still consulted when the legacy single-alias path is invoked
+        // (e.g. via third-party share sheets that don't enumerate aliases).
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
             Switch(
                 checked = autoExecute,
