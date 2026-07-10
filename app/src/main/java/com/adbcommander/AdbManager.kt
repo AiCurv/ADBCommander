@@ -221,6 +221,130 @@ object AdbManager {
     suspend fun testConnection(context: Context, host: String, port: Int): Result<String> =
         executeShell(context, host, port, "echo ok")
 
+    // ─────────────────────────────────────────────────────────────────────
+    //  v2.3.0 — TV-side package + icon discovery
+    //
+    //  These helpers are ADDITIVE — they do not modify any existing
+    //  method signatures on AdbManager (developer-context.md §2.3 says
+    //  renaming or removing existing methods is forbidden; adding new
+    //  ones is welcome). All shell I/O goes through the existing
+    //  [executeShell] pipeline so it inherits the same 10s read deadline
+    //  and Dispatchers.IO threading discipline (developer-context.md §2.2).
+    // ─────────────────────────────────────────────────────────────────────
+
+    /**
+     * List installed packages on the TV. Mirrors `pm list packages`.
+     *
+     * @param includeSystem when false, passes `-3` so only third-party
+     *   packages are returned (matches the screenshot's "THIRD-PARTY"
+     *   tab); when true, returns everything ("ALL APPS" tab).
+     */
+    suspend fun listTvPackages(
+        context: Context,
+        host: String,
+        port: Int,
+        includeSystem: Boolean
+    ): Result<List<String>> {
+        val cmd = if (includeSystem) "pm list packages" else "pm list packages -3"
+        val result = executeShell(context, host, port, cmd)
+        if (result.isFailure) return Result.failure(result.exceptionOrNull() ?: IOException("Unknown scan error"))
+        val pkgs = result.getOrDefault("")
+            .lines()
+            .map { it.trim() }
+            .filter { it.startsWith("package:") }
+            .map { it.removePrefix("package:") }
+        return Result.success(pkgs)
+    }
+
+    /**
+     * Fetch the launcher icon PNG for a single package on the TV and
+     * return its raw bytes. The icon is extracted straight from the
+     * package's base APK using `unzip -p`, so no full-APK download is
+     * needed — typical payload is 5–40 KB per icon.
+     *
+     * Pipeline (all executed as one shell invocation on the TV):
+     *   1. `pm path <pkg>`   →  package:/data/app/…/base.apk
+     *   2. `unzip -l <apk>`  →  list APK entries, grep for launcher PNG
+     *   3. `unzip -p <apk> <iconEntry>` →  stream PNG bytes to stdout
+     *   4. `base64`          →  ASCII-encode so the bytes survive the
+     *                            ADB shell transport (binary would corrupt)
+     *
+     * The icon-selection regex prefers higher-density mipmap buckets
+     * (xxxhdpi → xxhdpi → xhdpi → hdpi → mdpi) and falls back to
+     * `ic_launcher_round` if the square variant is absent. If no
+     * launcher entry is found, returns a failure so the caller can
+     * render the default placeholder.
+     *
+     * Runs entirely on Dispatchers.IO via [executeShell].
+     */
+    suspend fun fetchTvAppIconBytes(
+        context: Context,
+        host: String,
+        port: Int,
+        packageName: String
+    ): Result<ByteArray> = withContext(Dispatchers.IO) {
+        try {
+            // Step 1 — resolve APK path. `pm path` may return multiple
+            // lines for split APKs; we use the first (base.apk) which
+            // always contains the manifest-declared launcher icon.
+            val pathResult = executeShell(context, host, port, "pm path $packageName")
+            if (pathResult.isFailure) {
+                return@withContext Result.failure(IOException("pm path failed: ${pathResult.exceptionOrNull()?.message}"))
+            }
+            val apkPath = pathResult.getOrDefault("")
+                .lines()
+                .firstOrNull { it.startsWith("package:") }
+                ?.removePrefix("package:")
+                ?.trim()
+                ?: return@withContext Result.failure(IOException("No APK path for $packageName"))
+
+            // Step 2 + 3 + 4 — single shell pipeline. Doing it in one
+            // shot avoids reconnecting to the TV three times per icon
+            // (each executeShell opens a fresh connection per §1 of the
+            // developer context). The shell command below is what runs
+            // on the TV:
+            //
+            //   unzip -l <apk> 2>/dev/null \
+            //     | grep -oE 'res/[^ ]+ic_launcher[^ ]*\.(png|webp)' \
+            //     | sort -r \
+            //     | head -1 \
+            //     | xargs -I{} unzip -p <apk> {} 2>/dev/null \
+            //     | base64
+            //
+            // The `sort -r` trick ranks mipmap-xhdpi above mipmap-hdpi
+            // alphabetically (x > h) which is the density preference we
+            // want. If grep finds nothing, the rest of the pipeline
+            // produces no output and we return a failure.
+            val pipeline = """
+                ICON=${'$'}(unzip -l '$apkPath' 2>/dev/null | grep -oE 'res/[^ ]+ic_launcher[^ ]*\.(png|webp)' | sort -r | head -1);
+                if [ -n "${'$'}ICON" ]; then unzip -p '$apkPath' "${'$'}ICON" 2>/dev/null | base64; fi
+            """.trimIndent()
+
+            val iconResult = executeShell(context, host, port, pipeline)
+            if (iconResult.isFailure) {
+                return@withContext Result.failure(IOException("Icon pipeline failed: ${iconResult.exceptionOrNull()?.message}"))
+            }
+            val b64 = iconResult.getOrDefault("").trim()
+            if (b64.isBlank()) {
+                return@withContext Result.failure(IOException("No launcher icon entry in $apkPath"))
+            }
+            // The base64 output may contain newlines every 76 chars
+            // (standard GNU base64 wrapping). Strip them before decoding.
+            val cleaned = b64.replace("\n", "").replace("\r", "").replace(" ", "")
+            val bytes = try {
+                Base64.decode(cleaned, Base64.NO_WRAP)
+            } catch (e: Exception) {
+                return@withContext Result.failure(IOException("Base64 decode failed for $packageName: ${e.message}"))
+            }
+            if (bytes.isEmpty()) {
+                return@withContext Result.failure(IOException("Decoded icon is empty for $packageName"))
+            }
+            Result.success(bytes)
+        } catch (e: Exception) {
+            Result.failure(IOException("Icon fetch failed for $packageName: ${e.message}", e))
+        }
+    }
+
     /**
      * Push a local file to the TV via ADB shell using base64 encoding.
      * Suitable for small files (under ~2MB). For larger files, use HTTP streaming.

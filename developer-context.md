@@ -4,7 +4,104 @@
 > Any AI agent or human contributor starting a new session on this project
 > MUST read this file end-to-end before proposing changes. The constraints
 > documented here are non-negotiable unless explicitly revisited by the
-> project owner. Last updated: **v2.2.0-docs**.
+> project owner. Last updated: **v2.3.0-organic-ui**.
+
+---
+
+## 0. v2.3.0 — Premium Glassmorphism UI Overhaul (CHANGELOG)
+
+This section documents the architectural changes introduced in v2.3.0
+relative to v2.2.x. All constraints in §2 still hold unless explicitly
+noted here.
+
+### 0.1 Three-Frame State Machine (replaces single ConnectionTab)
+
+`MainScreen` now orchestrates three runtime frames via `AnimatedContent`
+with native Compose spring physics (`stiffness = Spring.StiffnessLow`,
+`dampingRatio = Spring.DampingRatioLowBouncy`) per the v2.3.0 build
+brief:
+
+1. **InterconnectFrame** — launch-time TV picker (Screenshot 1). Closes
+   on tap. The "main connector button" at the top of this frame is what
+   triggers the spring physics exit transition into the dashboard.
+2. **ConnectingOverlay** — transient "brand new tab" that opens the
+   instant the user taps a TV. Auto-closes when the test-connection
+   process finishes (success → Dashboard, failure → back to
+   InterconnectFrame).
+3. **DashboardScreen** — single persistent home tab (Screenshot 2).
+   Contains the app-icon grid + Quick Command surface + gear IconButton
+   that opens the Settings sheet.
+
+**This is NOT a multi-tab architecture.** The single-screen +
+gear-IconButton + ModalBottomSheet rule from §2.5 still holds — the
+InterconnectFrame is a launch-time transient, not a navigation
+destination.
+
+### 0.2 Glassmorphism Visual Tokens
+
+All premium surfaces are `GlassCard` composables that enforce:
+- 24dp backdrop blur via `BlurEffect` (Compose native, API 31+) with a
+  translucent-overlay fallback on API 24–30
+- White alpha tint 0.35f (light) / Black alpha tint 0.45f (dark)
+- Sharp 1.2dp outer border stroke
+
+The build brief specified `com.github.skydoves:cloudy:0.6.1` for the
+blur, but 0.6.1 was compiled with Kotlin 2.3.0 metadata (incompatible
+with this project's Kotlin 2.1.0) and transitively requires compileSdk
+36 + AGP 8.9.1. We implement the equivalent blur in-house using
+`androidx.compose.ui.graphics.BlurEffect` to stay on the v2.2.x
+toolchain. See `GlassCard` / `blurModifier` in `MainActivity.kt`.
+
+### 0.3 TV App Icon Pipeline (TvIconCache)
+
+`TvIconCache` (new file) manages an on-disk icon cache at
+`<filesDir>/tv_icons/<packageName>.png`. Icons are fetched from the TV
+via `AdbManager.fetchTvAppIconBytes()` which uses a single shell
+pipeline:
+
+```
+pm path <pkg> → unzip -l <apk> | grep ic_launcher → unzip -p <apk> <icon> | base64
+```
+
+The base64-encoded PNG is decoded on the phone and cached as
+`<packageName>.png`. The dashboard's "Select App" grid and the
+Settings → Preset Builder list both render icons from this cache,
+falling back to a generic Android icon when the cache misses.
+
+This replaces the v2.2.0 `PackageRow` which incorrectly used the
+PHONE's `PackageManager.getApplicationIcon()` — that only returned
+icons for apps also installed on the phone, not the TV.
+
+### 0.4 Appearance Settings (DataStore)
+
+New DataStore keys surfaced in Settings → Appearance:
+- `KEY_THEME_MODE` (System | Light | Dark)
+- `KEY_ACCENT_CHOICE` (Teal | TealLight | Blue)
+- `KEY_TEXT_SIZE` (Small | Medium | Large)
+- `KEY_BLUR_INTENSITY` (Subtle | Normal | Intense)
+
+These are threaded through `LocalAppearance` CompositionLocal so every
+composable can read the live appearance config. `ADBCommanderTheme`
+consumes the config to build the Material3 color scheme.
+
+### 0.5 Additive AdbManager Methods
+
+`AdbManager` gained two new public methods (additive — does NOT modify
+existing method signatures per §2.3):
+- `listTvPackages(context, host, port, includeSystem): Result<List<String>>`
+- `fetchTvAppIconBytes(context, host, port, packageName): Result<ByteArray>`
+
+Both run on `Dispatchers.IO` via `withContext` and reuse the existing
+`executeShell` pipeline, inheriting its 10s read deadline and the
+§2.2 background-IO-threading discipline.
+
+### 0.6 TvDiscoveryService Additive Method
+
+`TvDiscoveryService` gained `getCachedDevices(): List<DiscoveredTv>` —
+a public wrapper around the private `loadCache()`. Used by the Settings
+→ Device Management card to render saved devices without kicking off a
+full 7-second discovery scan. The §2.4 7-second hard timeout is
+unchanged.
 
 ---
 

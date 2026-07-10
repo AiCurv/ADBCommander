@@ -476,6 +476,15 @@ class TvDiscoveryService(private val context: Context) {
     }
 
     /**
+     * v2.3.0 — Public read of the on-disk cache. Returns the same list
+     * that [loadCache] produces internally, but exposed so callers like
+     * the Settings → Device Management card can render saved devices
+     * without kicking off a full 7-second discovery scan. Pure file
+     * read; safe to call from a background coroutine but NOT from Main.
+     */
+    fun getCachedDevices(): List<DiscoveredTv> = loadCache()
+
+    /**
      * Clear all cached devices. Useful for a "reset" button.
      */
     fun clearCache() {

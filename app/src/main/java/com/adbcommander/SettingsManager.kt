@@ -28,6 +28,15 @@ class SettingsManager(private val context: Context) {
         val KEY_CONTENT_TYPE = stringPreferencesKey("content_type")
         val KEY_SELECTED_TV_NAME = stringPreferencesKey("selected_tv_name")
 
+        // v2.3.0 — Appearance keys surfaced in Settings → Appearance card.
+        // Stored as ordinal-of-enum strings so future enum additions don't
+        // collide with previously-saved values (unknown ordinals fall back
+        // to defaults on read).
+        val KEY_THEME_MODE = stringPreferencesKey("theme_mode")
+        val KEY_ACCENT_CHOICE = stringPreferencesKey("accent_choice")
+        val KEY_TEXT_SIZE = stringPreferencesKey("text_size")
+        val KEY_BLUR_INTENSITY = stringPreferencesKey("blur_intensity")
+
         const val DEFAULT_TV_HOST = ""
         const val DEFAULT_TV_PORT = 5555
         // v2.2.0: Default command is now package-agnostic (no Cx Player component).
@@ -124,6 +133,12 @@ class SettingsManager(private val context: Context) {
     val contentType = context.dataStore.data.map { it[KEY_CONTENT_TYPE] ?: CONTENT_TYPE_URL }
     val selectedTvName = context.dataStore.data.map { it[KEY_SELECTED_TV_NAME] ?: "" }
 
+    // v2.3.0 — Appearance flows
+    val themeMode = context.dataStore.data.map { it[KEY_THEME_MODE] ?: "System" }
+    val accentChoice = context.dataStore.data.map { it[KEY_ACCENT_CHOICE] ?: "Teal" }
+    val textSize = context.dataStore.data.map { it[KEY_TEXT_SIZE] ?: "Medium" }
+    val blurIntensity = context.dataStore.data.map { it[KEY_BLUR_INTENSITY] ?: "Normal" }
+
     suspend fun getTvHost(): String = tvHost.first()
     suspend fun getTvPort(): Int = tvPort.first()
     suspend fun getDefaultCommand(): String = defaultCommand.first()
@@ -131,6 +146,17 @@ class SettingsManager(private val context: Context) {
     suspend fun getSelectedPreset(): String = selectedPreset.first()
     suspend fun getContentType(): String = contentType.first()
     suspend fun getSelectedTvName(): String = selectedTvName.first()
+
+    // v2.3.0 — Appearance getters / setters
+    suspend fun getThemeMode(): String = themeMode.first()
+    suspend fun getAccentChoice(): String = accentChoice.first()
+    suspend fun getTextSize(): String = textSize.first()
+    suspend fun getBlurIntensity(): String = blurIntensity.first()
+
+    suspend fun setThemeMode(v: String) { context.dataStore.edit { it[KEY_THEME_MODE] = v } }
+    suspend fun setAccentChoice(v: String) { context.dataStore.edit { it[KEY_ACCENT_CHOICE] = v } }
+    suspend fun setTextSize(v: String) { context.dataStore.edit { it[KEY_TEXT_SIZE] = v } }
+    suspend fun setBlurIntensity(v: String) { context.dataStore.edit { it[KEY_BLUR_INTENSITY] = v } }
 
     suspend fun setTvHost(host: String) { context.dataStore.edit { it[KEY_TV_HOST] = host } }
     suspend fun setTvPort(port: Int) { context.dataStore.edit { it[KEY_TV_PORT] = port } }

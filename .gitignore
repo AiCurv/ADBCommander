@@ -11,3 +11,6 @@ local.properties
 *.apk
 *.aab
 app/build/
+
+# v2.3.0: Kotlin 2.1.0 incremental compilation metadata
+.kotlin/
