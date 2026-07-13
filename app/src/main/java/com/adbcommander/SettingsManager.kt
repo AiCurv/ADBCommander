@@ -134,7 +134,7 @@ class SettingsManager(private val context: Context) {
     val selectedTvName = context.dataStore.data.map { it[KEY_SELECTED_TV_NAME] ?: "" }
 
     // v2.3.0 — Appearance flows
-    val themeMode = context.dataStore.data.map { it[KEY_THEME_MODE] ?: "System" }
+    val themeMode = context.dataStore.data.map { it[KEY_THEME_MODE] ?: "Light" }
     val accentChoice = context.dataStore.data.map { it[KEY_ACCENT_CHOICE] ?: "Teal" }
     val textSize = context.dataStore.data.map { it[KEY_TEXT_SIZE] ?: "Medium" }
     val blurIntensity = context.dataStore.data.map { it[KEY_BLUR_INTENSITY] ?: "Normal" }

@@ -2,14 +2,10 @@ package com.adbcommander.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// ── Legacy palette (kept for backwards compat with prior themes) ──────────
-val Purple80 = Color(0xFFD0BCFF)
-val PurpleGrey80 = Color(0xFFCCC2DC)
-val Pink80 = Color(0xFFEFB8C8)
-val Purple40 = Color(0xFF6650A4)
-val PurpleGrey40 = Color(0xFF625B71)
-val Pink40 = Color(0xFF7D5260)
-
+// ═══════════════════════════════════════════════════════════════════════
+//  v2.3.1 — Premium Teal Palette (ZERO purple)
+//  All legacy Purple/Pink constants have been purged. The entire app
+//  now uses the teal accent family (#26A69A) seen in the user's mockups.
 // ═══════════════════════════════════════════════════════════════════════
 //  v2.3.0 — Premium Glassmorphism Palette
 //  Anchored on the teal accent (#26A69A) seen in the user's mockups.

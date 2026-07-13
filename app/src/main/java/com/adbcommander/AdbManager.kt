@@ -10,6 +10,7 @@ import io.github.muntashirakon.adb.AbsAdbConnectionManager
 import io.github.muntashirakon.adb.AdbStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.IOException
@@ -167,10 +168,22 @@ object AdbManager {
                 val manager = getManager(context)
                 Log.d(TAG, "Connecting to $host:$port — sanitized command: $command")
 
-                val connected = manager.connect(host, port)
-                if (!connected) {
+                // v2.3.1: Hard 8-second ceiling on the connect() call itself.
+                // The library's connect() blocks indefinitely if the TV is
+                // showing the "Allow ADB debugging?" auth dialog and the user
+                // hasn't responded yet — or if the TV needs pairing first.
+                // Without this timeout the ConnectingOverlay spins forever
+                // and the user has to force-kill the app. withTimeoutOrNull
+                // returns null on timeout so we surface a clear error.
+                val connected = withTimeoutOrNull(8000L) { manager.connect(host, port) }
+                if (connected != true) {
                     return@withContext Result.failure(
-                        IOException("Failed to connect to $host:$port — ensure TV is paired and on same WiFi")
+                        IOException(
+                            "Could not reach $host:$port within 8s. " +
+                            "On the TV: open Settings → Developer options → Wireless debugging, " +
+                            "tap 'Pair device with pairing code', and use the Pair button below first. " +
+                            "If already paired, ensure the TV is awake and on the same WiFi."
+                        )
                     )
                 }
 
@@ -220,6 +233,46 @@ object AdbManager {
 
     suspend fun testConnection(context: Context, host: String, port: Int): Result<String> =
         executeShell(context, host, port, "echo ok")
+
+    /**
+     * Pair with a TV that has never been connected before.
+     *
+     * On Android 11+ TVs, wireless debugging requires a one-time pairing
+     * handshake (SPAKE2 over TLS) before plain `connect()` on port 5555
+     * will succeed. The user initiates pairing on the TV side via:
+     *   Settings → Developer options → Wireless debugging →
+     *   Pair device with pairing code
+     * which displays a random port (NOT 5555) and a 6-digit code.
+     *
+     * This method wraps the library's `pair()` call with an 8-second
+     * timeout so a wrong port/code doesn't hang the UI forever.
+     *
+     * @param host TV IP address
+     * @param pairPort The pairing port shown on the TV (random, NOT 5555)
+     * @param code The 6-digit pairing code shown on the TV
+     * @return success or failure with a descriptive message
+     */
+    suspend fun pairDevice(
+        context: Context,
+        host: String,
+        pairPort: Int,
+        code: String
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val manager = getManager(context)
+            Log.d(TAG, "Pairing with $host:$pairPort (code=${code.length} digits)")
+            val paired = withTimeoutOrNull(8000L) { manager.pair(host, pairPort, code) }
+            if (paired != true) {
+                Result.failure(IOException("Pairing timed out. Check the IP/port/code and that the TV is still showing the pairing screen."))
+            } else {
+                Log.d(TAG, "Pairing succeeded for $host")
+                Result.success(Unit)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Pairing failed", e)
+            Result.failure(IOException("Pairing failed: ${e.message}", e))
+        }
+    }
 
     // ─────────────────────────────────────────────────────────────────────
     //  v2.3.0 — TV-side package + icon discovery

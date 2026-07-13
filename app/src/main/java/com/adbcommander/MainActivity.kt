@@ -139,7 +139,7 @@ class MainActivity : ComponentActivity() {
                 val textSize = settings.getTextSize()
                 val blur = settings.getBlurIntensity()
                 appearance = AppearanceConfig(
-                    themeMode = runCatching { ThemeMode.valueOf(mode) }.getOrDefault(ThemeMode.System),
+                    themeMode = runCatching { ThemeMode.valueOf(mode) }.getOrDefault(ThemeMode.Light),
                     accent = runCatching { AccentChoice.valueOf(accent) }.getOrDefault(AccentChoice.Teal),
                     textSize = runCatching { TextSizeChoice.valueOf(textSize) }.getOrDefault(TextSizeChoice.Medium),
                     blur = runCatching { BlurChoice.valueOf(blur) }.getOrDefault(BlurChoice.Normal)
@@ -449,6 +449,17 @@ fun InterconnectFrame(
     var manualExpanded by remember { mutableStateOf(false) }
     var manualHost by remember { mutableStateOf("") }
     var manualPort by remember { mutableStateOf("5555") }
+
+    // v2.3.1 — Pairing dialog state. Solves "ADB shell kept running,
+    // didn't prompt anything on TV": the TV was never paired, so
+    // connect() on port 5555 hung forever. The user must pair once
+    // via the TV's "Pair device with pairing code" screen first.
+    var showPairDialog by remember { mutableStateOf(false) }
+    var pairHost by remember { mutableStateOf("") }
+    var pairPort by remember { mutableStateOf("") }
+    var pairCode by remember { mutableStateOf("") }
+    var isPairing by remember { mutableStateOf(false) }
+    var pairMessage by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(Unit) {
         tvHost = settings.getTvHost()
@@ -794,10 +805,122 @@ fun InterconnectFrame(
                             Spacer(Modifier.width(8.dp))
                             Text("Connect")
                         }
+
+                        // v2.3.1 — Pair button. Opens a dialog where the
+                        // user enters the pairing port + 6-digit code shown
+                        // on the TV's "Pair device with pairing code" screen.
+                        OutlinedButton(
+                            onClick = {
+                                pairHost = manualHost.trim()
+                                pairPort = ""
+                                pairCode = ""
+                                pairMessage = null
+                                showPairDialog = true
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Filled.Link, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Pair New TV (first time only)")
+                        }
                     }
                 }
             }
         }
+    }
+
+    // v2.3.1 — Pairing dialog. Shows instructions + collects the pairing
+    // port and 6-digit code from the TV's "Pair device with pairing code"
+    // screen, then calls AdbManager.pairDevice. After pairing succeeds,
+    // the user can connect normally via port 5555.
+    if (showPairDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                if (!isPairing) showPairDialog = false
+            },
+            title = { Text("Pair New TV") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "On your TV, open Settings → Developer options → Wireless debugging → Pair device with pairing code. " +
+                        "Enter the IP, pairing port (NOT 5555), and 6-digit code shown on the TV screen.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = pairHost,
+                        onValueChange = { pairHost = it },
+                        label = { Text("TV IP Address") },
+                        placeholder = { Text("192.168.1.123") },
+                        singleLine = true,
+                        enabled = !isPairing,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = pairPort,
+                        onValueChange = { pairPort = it.filter { c -> c.isDigit() }.take(5) },
+                        label = { Text("Pairing Port (from TV)") },
+                        placeholder = { Text("e.g. 43251") },
+                        singleLine = true,
+                        enabled = !isPairing,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = pairCode,
+                        onValueChange = { pairCode = it.filter { c -> c.isDigit() }.take(6) },
+                        label = { Text("6-digit Pairing Code") },
+                        placeholder = { Text("123456") },
+                        singleLine = true,
+                        enabled = !isPairing,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (isPairing) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    }
+                    pairMessage?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (it.startsWith("Success", ignoreCase = true))
+                                MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !isPairing && pairHost.isNotBlank() && pairPort.length >= 4 && pairCode.length == 6,
+                    onClick = {
+                        isPairing = true
+                        pairMessage = null
+                        scope.launch {
+                            val result = AdbManager.pairDevice(
+                                context = context,
+                                host = pairHost.trim(),
+                                pairPort = pairPort.toInt(),
+                                code = pairCode
+                            )
+                            isPairing = false
+                            if (result.isSuccess) {
+                                pairMessage = "Success! TV paired. Now enter the TV's IP in the fields above with port 5555 and tap Connect."
+                                Toast.makeText(context, "Paired! Now connect on port 5555", Toast.LENGTH_LONG).show()
+                            } else {
+                                pairMessage = "Failed: ${result.exceptionOrNull()?.message}"
+                            }
+                        }
+                    }
+                ) { Text("Pair") }
+            },
+            dismissButton = {
+                TextButton(
+                    enabled = !isPairing,
+                    onClick = { showPairDialog = false }
+                ) { Text("Close") }
+            }
+        )
     }
 }
 

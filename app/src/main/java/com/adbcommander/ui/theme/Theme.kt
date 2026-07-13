@@ -57,7 +57,7 @@ enum class ThemeMode(val label: String) {
 
 /** Composition-local so any composable can read the live accent / blur / text-size. */
 data class AppearanceConfig(
-    val themeMode: ThemeMode = ThemeMode.System,
+    val themeMode: ThemeMode = ThemeMode.Light,
     val accent: AccentChoice = AccentChoice.Teal,
     val textSize: TextSizeChoice = TextSizeChoice.Medium,
     val blur: BlurChoice = BlurChoice.Normal
