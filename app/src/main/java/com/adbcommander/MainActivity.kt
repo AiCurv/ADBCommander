@@ -1881,7 +1881,7 @@ fun TerminalTab() {
                     },
                     enabled = input.isNotBlank() && !isRunning
                 ) {
-                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Run")
+                    Icon(Icons.Filled.Send, contentDescription = "Run")
                 }
             }
         }
