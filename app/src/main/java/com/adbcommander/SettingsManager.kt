@@ -140,6 +140,7 @@ class SettingsManager(private val context: Context) {
     suspend fun setContentType(type: String) { context.dataStore.edit { it[KEY_CONTENT_TYPE] = type } }
     suspend fun setSelectedTvName(name: String) { context.dataStore.edit { it[KEY_SELECTED_TV_NAME] = name } }
 
+
     // ── Preset management via SharedPreferences ──────────────────────
     //
     // v2.2.1: All preset reads/writes now route through the companion-level

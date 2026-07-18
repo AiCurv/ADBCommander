@@ -4,7 +4,7 @@
 > Any AI agent or human contributor starting a new session on this project
 > MUST read this file end-to-end before proposing changes. The constraints
 > documented here are non-negotiable unless explicitly revisited by the
-> project owner. Last updated: **v2.2.0-docs**.
+> project owner. Last updated: **v2.3.0**.
 
 ---
 
@@ -26,14 +26,15 @@ The design philosophy is **manual-connection, on-demand execution**:
   in the critical path for command execution.
 - A Quick Settings tile (`AdbTileService`) exposes a one-tap toggle for the
   bridge from anywhere in the OS.
-- The UI is deliberately single-screen. There is no multi-tab navigation, no
-  onboarding flow, no analytics, no telemetry. Every screen is built to be
-  understood in under five seconds by a technical user.
+- The UI has two top-level destinations (Connect and Terminal), navigated via a
+  bottom NavigationBar that hides on scroll-down and shows on scroll-up. This
+  provides a clean, immersive experience. There is no onboarding flow, no
+  analytics, no telemetry. Every screen is built to be understood in under five
+  seconds by a technical user.
 
-**What this project is NOT**: a file manager, a side-loading utility, an ADB
-shell terminal, a multi-device orchestrator, or a generic Android utility
-suite. Pull requests that drift in any of those directions should be
-rejected.
+**What this project is NOT**: a file manager, a side-loading utility,
+a multi-device orchestrator, or a generic Android utility suite. Pull
+requests that drift in any of those directions should be rejected.
 
 ---
 
@@ -120,14 +121,20 @@ regression that v2.2.0 fixed. The constant `HARD_TIMEOUT_MS = 7000L` is
 intentional and must not be raised above 10,000ms without explicit owner
 sign-off.
 
-### 2.5 Single-Screen UI With Gear Icon Settings Overlay
+### 2.5 Two-Destination UI With Bottom NavigationBar
 
-The app has **exactly one screen** (the Connection screen) plus a
-`ModalBottomSheet` settings overlay opened via the Gear `IconButton` in the
-`TopAppBar.actions` slot. Do not re-introduce a bottom navigation bar, a
-drawer, or additional top-level destinations. The previous 2-tab structure
-was deleted in v2.2.0 for a reason — the Settings content is configuration,
-not navigation.
+The app has **two top-level destinations**: the Connection screen and the
+Terminal screen. Navigation is via a `NavigationBar` at the bottom of the
+screen that hides when the user scrolls down and shows when they scroll up.
+The Gear `IconButton` in the `TopAppBar.actions` slot opens a
+`ModalBottomSheet` settings overlay. Do not add additional top-level
+destinations beyond these two. The Settings content is configuration, not
+navigation — it stays in the ModalBottomSheet.
+
+The bottom NavigationBar uses `AnimatedVisibility` with `slideInVertically`/
+`slideOutVertically` to provide a smooth hide/show animation. The scroll
+direction is detected by comparing consecutive scroll positions with a
+threshold of 10 pixels.
 
 ### 2.6 Dual Activity-Alias Share Targets
 
@@ -292,41 +299,57 @@ Scaffold
 ├── TopAppBar
 │   ├── title = "ADB Commander"
 │   └── actions = [ Gear IconButton → opens ModalBottomSheet ]
-└── content = ConnectionTab()
+├── content = when(activeTab) { 0 → ConnectionTab(); 1 → TerminalTab() }
+└── bottomBar = NavigationBar (hides on scroll-down, shows on scroll-up)
+    ├── NavigationBarItem(Connect)
+    └── NavigationBarItem(Terminal)
 ```
 
-There is no `bottomBar`. There is no drawer. There is one screen.
+The NavigationBar uses `AnimatedVisibility` with slide animations for
+smooth hide/show on scroll. When switching tabs, the bar is always visible.
 
 ### 5.2 ConnectionTab
 
-The single operational surface. Scrollable `Column` containing, in order:
+The primary operational surface. Scrollable `Column` containing, in order:
 
-1. **TV Scan card** — spinner while scanning, "N TV(s) found" when done,
-   "No TVs found yet" + tap-to-retry hint when empty. Rescan `IconButton`.
-2. **Active target indicator** — shows the currently selected TV's friendly
-   name + host:port. Hidden if no device is selected.
-3. **Discovered devices list** — one `DiscoveredTvRow` per device. Tap
-   selects; expand icon shows details (IP, port, source, last-seen) plus
-   "Test" and "Forget" buttons.
-4. **Advanced Manual Entry accordion** — collapsible IP/port text fields
+1. **Active Target Indicator card** — always visible at top. Shows
+   connected TV name + host:port with a green dot, or "No TV connected"
+   with a red dot and hint to scan. Includes a quick Test button when TV
+   is configured. This is the canonical connection status — it reflects
+   the actual persisted TV host, not just scan state.
+2. **Connection test result** — transient card showing success/failure of
+   the last test, with a dismiss button.
+3. **TV Scan card** (auto-hides when TV is connected) — spinner while
+   scanning, "N TV(s) found" when done, "No TVs found yet" + tap-to-retry
+   hint when empty. Rescan `IconButton`. **Decluttered**: when a TV is
+   already connected and selected, the scan card collapses to a compact
+   "N device(s) found + Rescan" row. Only reappears if scanning or no TV.
+4. **Discovered devices list** — one `DiscoveredTvRow` per device (only
+   shown when scan card is visible). Tap selects; expand shows details.
+5. **Advanced Manual Entry accordion** — collapsible IP/port text fields
    for power users. Default closed.
-5. **Command Presets dropdown** — `ExposedDropdownMenuBox` listing
-   built-in presets (just "SmartTube" as of v2.2.0) plus any user-saved
-   custom presets. Delete icon next to custom presets.
-6. **Save Current as Preset button** — opens an alert dialog prompting for
-   a name, then saves the current `customCommand` text via
-   `SettingsManager.saveCustomPreset()`.
-7. **Shell Command text field** — multi-line monospace. Updates to the
-   text auto-detect matching preset name and persist via
-   `SettingsManager.setDefaultCommand()`.
-8. **RUN COMMAND button** — calls `AdbManager.executeShell()` and shows
-   the output in a colored card (primary container for success, error
-   container for failure).
-9. **Auto-Execute toggle** — Switch that toggles the persisted
-   `autoExecute` setting. Note: with v2.2.0 dual share-sheet aliases, this
-   toggle is now mostly informational — the alias chosen by the user at
-   share time takes precedence. It still controls the behavior when the
-   legacy single-alias path is somehow triggered.
+6. **Command Presets dropdown** — `ExposedDropdownMenuBox` listing
+   built-in presets plus any user-saved custom presets.
+7. **Save Current as Preset button**.
+8. **Shell Command text field** — multi-line monospace.
+9. **RUN COMMAND button** — calls `AdbManager.executeShell()` and shows
+   output in a dismissable card.
+10. **Auto-Execute toggle**.
+
+### 5.2b TerminalTab (v2.3.0)
+
+A pure ADB shell that runs commands directly on the TV. Contains:
+
+1. **Target status bar** — shows connected TV name:port or "No TV — go to
+   Connect tab" with colored indicator dot.
+2. **Quick-action chips** — `FilterChip` strip with icons for common TV
+   operations: Home, OK, Back, Volume Up/Down, Power, Model, Android
+   version, Resolution, Awake check, Apps list, Reboot.
+3. **Output scrollback** — dark terminal background (#0D1117) with
+   color-coded lines: cyan for commands, light gray for output, soft red
+   for errors, dim for system messages. Auto-scrolls to newest output.
+4. **Input bar** — monospace text field with "$" prompt, Send button
+   (filled icon button), and history navigation (up/down arrows).
 
 ### 5.3 SettingsSheet (ModalBottomSheet)
 
@@ -396,7 +419,7 @@ by `ShareReceiverActivity` for the floating-dialog effect.
 
 | File | Role |
 |------|------|
-| `app/src/main/java/com/adbcommander/MainActivity.kt` | Single-screen Compose UI. `MainScreen`, `ConnectionTab`, `SettingsSheet`, `DiscoveredTvRow`, `PackageRow`, `LogEntryRow`, `SectionHeader`. |
+| `app/src/main/java/com/adbcommander/MainActivity.kt` | Two-destination Compose UI with bottom nav. `MainScreen` (NavigationBar with hide-on-scroll), `ConnectionTab`, `TerminalTab`, `SettingsSheet`, `DiscoveredTvRow`, `PackageRow`, `LogEntryRow`, `SectionHeader`, `TerminalLine`. |
 | `app/src/main/java/com/adbcommander/TvDiscoveryService.kt` | Dual-tier TV discovery (mDNS + subnet sweep) with 7s hard timeout and live device-name enrichment via ADB shell. |
 | `app/src/main/java/com/adbcommander/AdbManager.kt` | ADB connection management, shell execution, URL/file/mime token substitution, file push, HTTP file server lifecycle. |
 | `app/src/main/java/com/adbcommander/ShareReceiverActivity.kt` | Translucent dialog activity launched from the share sheet. Detects alias and forces manual/auto mode. |
