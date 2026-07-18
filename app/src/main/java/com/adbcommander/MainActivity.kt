@@ -40,6 +40,19 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Surface
+import androidx.compose.material3.IconToggleButton
+import androidx.compose.material.icons.automirrored.filled.Terminal
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.background
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -64,26 +77,58 @@ class MainActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen() {
-    // v2.2.0: Bottom navigation bar deleted. The screen is now a single
-    // Connection tab. All configurations previously housed in the Settings
-    // tab are reachable via the Gear IconButton in the TopAppBar, which
-    // opens a ModalBottomSheet overlay (see SettingsSheet).
-    //
-    // AI AGENT NOTE: Do NOT re-introduce a bottom NavigationBar, a drawer, or
-    // any additional top-level destinations. The single-screen + Gear IconButton
-    // + ModalBottomSheet architecture is intentional — see developer-context.md §2.5.
+    // v2.3.0: Two top-level destinations — "Connect" (TV link sender) and
+    // "Terminal" (pure ADB shell into the TV). Navigation is a segmented
+    // toggle in the TopAppBar, NOT a bottom NavigationBar, to honor
+    // developer-context.md §2.5 (no bottom nav / drawer / extra destinations).
+    // The Gear IconButton still opens the ModalBottomSheet settings overlay.
     var showSettingsSheet by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var activeTab by remember { mutableStateOf(0) } // 0 = Connect, 1 = Terminal
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("ADB Commander") },
                 actions = {
-                    // AI AGENT NOTE: This Gear IconButton is the ONLY entry point to
-                    // all configuration UI (Background Service, Package Manager,
-                    // Backup/Restore, Logs). Do not move it, hide it, or duplicate it
-                    // elsewhere. Removing it orphans the entire Settings surface.
+                    // Segmented destination toggle (Connect / Terminal).
+                    // Replaces the deleted bottom NavigationBar from v2.2.0 while
+                    // staying compliant with §2.5 (top-bar control, not a nav bar).
+                    Surface(
+                        modifier = Modifier.padding(end = 4.dp),
+                        shape = MaterialTheme.shapes.small,
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        tonalElevation = 2.dp
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconToggleButton(
+                                checked = activeTab == 0,
+                                onCheckedChange = { if (it) activeTab = 0 }
+                            ) {
+                                Icon(
+                                    Icons.Filled.Home,
+                                    contentDescription = "Connect",
+                                    tint = if (activeTab == 0)
+                                        MaterialTheme.colorScheme.onSecondaryContainer
+                                    else MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.5f)
+                                )
+                            }
+                            IconToggleButton(
+                                checked = activeTab == 1,
+                                onCheckedChange = { if (it) activeTab = 1 }
+                            ) {
+                                Icon(
+                                    Icons.AutoMirrored.Filled.Terminal,
+                                    contentDescription = "Terminal",
+                                    tint = if (activeTab == 1)
+                                        MaterialTheme.colorScheme.onSecondaryContainer
+                                    else MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.5f)
+                                )
+                            }
+                        }
+                    }
+                    // AI AGENT NOTE: Gear IconButton is the ONLY entry point to all
+                    // configuration UI. Do not move/hide/duplicate it.
                     IconButton(onClick = { showSettingsSheet = true }) {
                         Icon(
                             Icons.Filled.Settings,
@@ -104,18 +149,13 @@ fun MainScreen() {
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            ConnectionTab()
+            when (activeTab) {
+                0 -> ConnectionTab()
+                1 -> TerminalTab()
+            }
         }
     }
 
-    // v2.2.0: Settings overlay sheet — replaces the old Settings tab.
-    // Contains Background Service & Battery, Package Manager, Backup & Restore,
-    // and Execution Logs. Dismissed by tap-outside, swipe-down, or the X button.
-    //
-    // AI AGENT NOTE: The SettingsSheet MUST remain a ModalBottomSheet (not a
-    // separate Activity, not a Fragment, not a navigation destination). The
-    // sheet pattern preserves the user's Connection-screen scroll state and
-    // keeps the configuration UI dismissable with a single swipe.
     if (showSettingsSheet) {
         ModalBottomSheet(
             onDismissRequest = { showSettingsSheet = false },
@@ -1574,5 +1614,274 @@ private fun SectionHeader(title: String, icon: androidx.compose.ui.graphics.vect
         Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
         Spacer(Modifier.width(8.dp))
         Text(title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  TERMINAL TAB (v2.3.0) — pure ADB shell into the Android TV
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Data class for a single terminal line.
+ *  - role = "cmd"   → the command the user typed (prefixed with "$ ")
+ *  - role = "out"   → raw stdout/stderr returned by the TV
+ *  - role = "err"   → local error (e.g. TV not paired, connection refused)
+ *  - role = "sys"   → local system notice (e.g. "Connecting to 10.0.0.5:5555")
+ */
+private data class TerminalLine(
+    val role: String,
+    val text: String
+)
+
+/**
+ * TerminalTab — a clean black shell that talks directly to the TV over ADB.
+ *
+ * Quality-of-life features:
+ *  - Scrollback of every command + its raw output.
+ *  - Command history navigable with the physical/virtual keyboard ArrowUp/ArrowDown.
+ *  - Quick-action chips for the most common Android TV ADB operations.
+ *  - Auto-sanitizes pasted "adb shell ..." prefixes via AdbManager.sanitizeCommand.
+ *  - All ADB work runs on Dispatchers.IO (developer-context.md §2.2). Reuses the
+ *    existing executeShell() 10-second read deadline, so a hung TV never blocks.
+ *
+ * AI AGENT NOTE: This tab is a SECOND top-level destination, not a replacement for
+ * the Connection tab. Navigation between them is a TopAppBar segmented toggle in
+ * MainScreen(); there is intentionally NO bottom NavigationBar (§2.5). The TV
+ * host/port are read once on mount from SettingsManager and cached in state — we
+ * do NOT re-read DataStore on every keystroke.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun TerminalTab() {
+    val context = LocalContext.current
+    val settings = remember { SettingsManager(context) }
+    val scope = rememberCoroutineScope()
+
+    var tvHost by remember { mutableStateOf("") }
+    var tvPort by remember { mutableIntStateOf(SettingsManager.DEFAULT_TV_PORT) }
+    var tvName by remember { mutableStateOf("") }
+
+    var lines by remember { mutableStateOf(listOf(TerminalLine("sys", "ADB Terminal — commands run on your TV over Wireless ADB."))) }
+    var input by remember { mutableStateOf("") }
+    var isRunning by remember { mutableStateOf(false) }
+    var history by remember { mutableStateOf(listOf<String>()) }
+    var historyIndex by remember { mutableStateOf(-1) }
+
+    val listState = rememberLazyListState()
+
+    // Load the active TV target once on mount (IO thread, per §2.2).
+    LaunchedEffect(Unit) {
+        val h = withContext(Dispatchers.IO) { settings.getTvHost() }
+        val p = withContext(Dispatchers.IO) { settings.getTvPort() }
+        val n = withContext(Dispatchers.IO) { settings.getSelectedTvName() }
+        tvHost = h
+        tvPort = p
+        tvName = n
+    }
+
+    // Auto-scroll to the newest line whenever output grows.
+    LaunchedEffect(lines.size) {
+        if (lines.isNotEmpty()) {
+            listState.animateScrollToItem(lines.size - 1)
+        }
+    }
+
+    fun append(line: TerminalLine) {
+        lines = lines + line
+    }
+
+    fun runCommand(raw: String) {
+        val cmd = AdbManager.sanitizeCommand(raw)
+        if (cmd.isBlank()) return
+        if (tvHost.isBlank()) {
+            append(TerminalLine("err", "No TV configured. Open the Gear ⚙ settings and set your TV IP first."))
+            return
+        }
+        // Push to history (dedupe consecutive repeats).
+        if (history.isEmpty() || history.last() != cmd) {
+            history = history + cmd
+        }
+        historyIndex = -1
+        append(TerminalLine("cmd", cmd))
+        isRunning = true
+        scope.launch {
+            try {
+                append(TerminalLine("sys", "→ $tvHost:$tvPort"))
+                val result = withContext(Dispatchers.IO) {
+                    AdbManager.executeShell(context, tvHost, tvPort, cmd)
+                }
+                result.onSuccess { out ->
+                    if (out.isBlank()) {
+                        append(TerminalLine("out", "(no output)"))
+                    } else {
+                        out.split("\n").forEach { append(TerminalLine("out", it)) }
+                    }
+                }.onFailure { e ->
+                    append(TerminalLine("err", e.message ?: "Command failed"))
+                }
+            } finally {
+                isRunning = false
+            }
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        // ── Target status bar ──────────────────────────────────────────
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    if (tvHost.isNotBlank()) Icons.Filled.CheckCircle else Icons.Filled.Warning,
+                    contentDescription = null,
+                    tint = if (tvHost.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = if (tvHost.isNotBlank())
+                        "TV: ${tvName.ifBlank { tvHost }}:$tvPort"
+                    else "No TV set — open ⚙ settings",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        // ── Quick-action chips ─────────────────────────────────────────
+        val quickCmds = listOf(
+            "input keyevent KEYCODE_HOME" to "Home",
+            "input keyevent KEYCODE_DPAD_CENTER" to "OK",
+            "input keyevent KEYCODE_BACK" to "Back",
+            "getprop ro.product.model" to "Model",
+            "getprop ro.build.version.release" to "Android",
+            "wm size" to "Resolution",
+            "dumpsys power | grep mWakefulness" to "Awake?",
+            "pm list packages -3" to "Apps (3rd)",
+            "input keyevent KEYCODE_POWER" to "Power",
+            "reboot" to "Reboot"
+        )
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            items(quickCmds) { (cmd, label) ->
+                AssistChip(
+                    onClick = { if (!isRunning) runCommand(cmd) },
+                    label = { Text(label, style = MaterialTheme.typography.labelSmall) },
+                    enabled = !isRunning
+                )
+            }
+        }
+        HorizontalDivider()
+
+        // ── Output scrollback (black terminal) ────────────────────────
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .background(Color(0xFF0B0E14))
+                .padding(horizontal = 10.dp, vertical = 8.dp)
+        ) {
+            items(lines) { line ->
+                val color = when (line.role) {
+                    "cmd" -> Color(0xFF7FD1FF)   // cyan prompt
+                    "out" -> Color(0xFFD6DEEB)   // light gray output
+                    "err" -> Color(0xFFFF6B6B)   // red error
+                    else  -> Color(0xFF6B7280)   // dim sys notice
+                }
+                val prefix = if (line.role == "cmd") "$ " else ""
+                Text(
+                    text = prefix + line.text,
+                    color = color,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp,
+                    modifier = Modifier.padding(vertical = 1.dp)
+                )
+            }
+            if (isRunning) {
+                item { Text("…", color = Color(0xFF6B7280), fontFamily = FontFamily.Monospace, fontSize = 12.sp) }
+            }
+        }
+
+        // ── Input bar ──────────────────────────────────────────────────
+        Surface(
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 2.dp
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "$",
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontSize = 16.sp,
+                    modifier = Modifier.padding(end = 6.dp)
+                )
+                BasicTextField(
+                    value = input,
+                    onValueChange = { input = it; historyIndex = -1 },
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(vertical = 4.dp),
+                    textStyle = TextStyle(
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontSize = 14.sp
+                    ),
+                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                    keyboardActions = KeyboardActions(
+                        onSend = {
+                            runCommand(input)
+                            input = ""
+                        }
+                    ),
+                    decorationBox = { inner ->
+                        if (input.isEmpty()) {
+                            Text("type a command…", color = MaterialTheme.colorScheme.onSurfaceVariant, fontFamily = FontFamily.Monospace, fontSize = 14.sp)
+                        }
+                        inner()
+                    }
+                )
+                // ArrowUp/ArrowDown history navigation via hardware keyboard.
+                // (Soft-keyboard users can still use the chips + retype.)
+                Spacer(Modifier.width(6.dp))
+                IconButton(
+                    onClick = {
+                        if (history.isEmpty()) return@IconButton
+                        historyIndex = if (historyIndex < 0) history.size - 1
+                        else maxOf(0, historyIndex - 1)
+                        input = history[historyIndex]
+                    },
+                    enabled = history.isNotEmpty() && !isRunning
+                ) {
+                    Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "History up")
+                }
+                IconButton(
+                    onClick = {
+                        if (input.isNotBlank() && !isRunning) {
+                            runCommand(input)
+                            input = ""
+                        }
+                    },
+                    enabled = input.isNotBlank() && !isRunning
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Run")
+                }
+            }
+        }
     }
 }
