@@ -181,3 +181,27 @@ Stage Summary:
 - 3 user requirements satisfied: (1) preset visibility regression fixed via global SharedPreferences binding, (2) share-sheet labels shortened to "ADB Auto" / "ADB Manual", (3) new AdbPresetTileService with dropdown overlay that locks the auto-execute preset and updates tile subtitle dynamically.
 - Commit: fix-preset-visibility-and-add-dropdown-preset-tile, version v2.2.1 / code 32.
 - Build delegated to GitHub Actions CI — no local compilation attempted.
+
+---
+Task ID: 13
+Agent: Main Agent
+Task: feat: bottom nav + terminal tab + declutter + connection fix (v2.3.0)
+
+Work Log:
+- Read developer-context.md and all source files end-to-end
+- Read feature/terminal-tab branch commits (terminal tab + icon fix)
+- Identified TV connection status bug: active target indicator was hidden when no scan was active
+- Created feat/bottom-nav-terminal-declutter branch from main
+- Rewrote MainScreen with bottom NavigationBar + hide-on-scroll behavior
+- Fixed TV connection status: always-visible active target indicator reflecting persisted state
+- Merged TerminalTab with improvements (FilterChips with icons, dark theme, history nav)
+- Decluttered ConnectionTab (scan card auto-hides, dismiss buttons, compact rescan)
+- Rounded all cards/inputs to 12-16dp
+- Updated developer-context.md for v2.3.0
+- Fixed CI compile errors (imports, API differences, log field names)
+- CI build succeeded, merged to main, pushed
+
+Stage Summary:
+- 5 files modified: MainActivity.kt, SettingsManager.kt, build.gradle.kts, developer-context.md, build.yml
+- Version: v2.3.0 / code 33
+- CI run ID: 29628148931, Artifact: app-debug (23.7 MB)
