@@ -9,7 +9,7 @@
     <string name="tile_preset_label">ADB Preset</string>
     <string name="tile_preset_subtitle_none">No preset locked</string>
     <string name="preset_picker_title">Lock auto-execute preset</string>
-    <string name="preset_picker_empty">No custom presets saved. Open ADB Manual to create one.</string>
+    <string name="preset_picker_empty">No custom presets saved. Open the app to create one.</string>
 
     <!-- Foreground service notification -->
     <string name="notification_channel_name">ADB TV Bridge</string>
@@ -36,18 +36,4 @@
     <string name="tv_test_connection">Test Connection</string>
     <string name="tv_advanced">Manual Connection</string>
     <string name="tv_advanced_hint">Enter TV IP and port if auto-discovery misses your TV.</string>
-
-    <!-- Home tab -->
-    <string name="home_presets_section">Presets</string>
-    <string name="home_quick_command">Quick Command</string>
-    <string name="home_select_app">Select App</string>
-    <string name="home_scan_apps">Scan TV Apps</string>
-    <string name="home_save_preset">Save as Preset</string>
-    <string name="home_no_apps">Scan your TV for apps first</string>
-
-    <!-- Battery prompt -->
-    <string name="battery_prompt_title">Grant Battery Immunity</string>
-    <string name="battery_prompt_message">ADB Commander needs battery optimization exemption to keep the bridge alive in the background. Without it, Android may kill the service while you\'re using it.</string>
-    <string name="battery_prompt_grant">Grant Immunity</string>
-    <string name="battery_prompt_skip">Skip</string>
 </resources>

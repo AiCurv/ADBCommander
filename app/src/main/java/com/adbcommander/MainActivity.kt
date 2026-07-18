@@ -3,8 +3,6 @@ package com.adbcommander
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
-import android.os.PowerManager
-import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -14,18 +12,16 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -58,8 +54,40 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        // Auto-start ADB bridge if a TV is configured
+        val settings = SettingsManager(this)
+        lifecycleScope.launch {
+            val host = settings.getTvHost()
+            if (host.isNotBlank() && !AdbForegroundService.isRunning()) {
+                AdbForegroundService.start(this@MainActivity)
+            }
+        }
+
         setContent {
-            ADBCommanderTheme {
+            // Read theme mode from settings
+            val context = LocalContext.current
+            val settingsManager = remember { SettingsManager(context) }
+            var themeMode by remember { mutableStateOf(SettingsManager.THEME_SYSTEM) }
+
+            LaunchedEffect(Unit) {
+                themeMode = settingsManager.getThemeMode()
+            }
+
+            // Keep listening for theme changes
+            LaunchedEffect(Unit) {
+                settingsManager.themeMode.collect { mode ->
+                    themeMode = mode
+                }
+            }
+
+            val darkTheme = when (themeMode) {
+                SettingsManager.THEME_LIGHT -> false
+                SettingsManager.THEME_DARK -> true
+                else -> isSystemInDarkTheme()
+            }
+
+            ADBCommanderTheme(darkTheme = darkTheme) {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     MainScreen()
                 }
@@ -69,7 +97,7 @@ class MainActivity : ComponentActivity() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  MAIN SCREEN — Bottom navigation with hide-on-scroll behavior
+//  MAIN SCREEN — Bottom navigation (always visible, no hide-on-scroll)
 // ═══════════════════════════════════════════════════════════════════════
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -78,90 +106,6 @@ fun MainScreen() {
     var activeTab by remember { mutableIntStateOf(0) }
     var showSettingsSheet by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-
-    val connectScrollState = rememberScrollState()
-    val terminalListState = rememberLazyListState()
-
-    var connectPrevScroll by remember { mutableIntStateOf(0) }
-    var terminalPrevScroll by remember { mutableIntStateOf(0) }
-    var isBarVisible by remember { mutableStateOf(true) }
-
-    LaunchedEffect(connectScrollState.value) {
-        val delta = connectScrollState.value - connectPrevScroll
-        if (delta > 10) isBarVisible = false
-        else if (delta < -10) isBarVisible = true
-        connectPrevScroll = connectScrollState.value
-    }
-
-    LaunchedEffect(terminalListState.firstVisibleItemIndex, terminalListState.firstVisibleItemScrollOffset) {
-        if (activeTab != 1) return@LaunchedEffect
-        val offset = terminalListState.firstVisibleItemIndex * 1000 + terminalListState.firstVisibleItemScrollOffset
-        val delta = offset - terminalPrevScroll
-        if (delta > 10) isBarVisible = false
-        else if (delta < -10) isBarVisible = true
-        terminalPrevScroll = offset
-    }
-
-    LaunchedEffect(activeTab) {
-        isBarVisible = true
-    }
-
-    // Battery optimization first-install prompt (shown once only)
-    val context = LocalContext.current
-    val settings = remember { SettingsManager(context) }
-    var showBatteryPrompt by remember { mutableStateOf(false) }
-
-    LaunchedEffect(Unit) {
-        val prompted = settings.isFirstInstallPrompted()
-        if (!prompted) {
-            val pm = context.getSystemService(android.content.Context.POWER_SERVICE) as PowerManager
-            val isImmune = pm.isIgnoringBatteryOptimizations(context.packageName)
-            if (!isImmune) {
-                showBatteryPrompt = true
-            } else {
-                settings.setFirstInstallPrompted(true)
-            }
-        }
-    }
-
-    if (showBatteryPrompt) {
-        AlertDialog(
-            onDismissRequest = {
-                showBatteryPrompt = false
-                kotlinx.coroutines.runBlocking { settings.setFirstInstallPrompted(true) }
-            },
-            title = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Filled.Shield, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text(context.getString(R.string.battery_prompt_title))
-                }
-            },
-            text = {
-                Text(context.getString(R.string.battery_prompt_message))
-            },
-            confirmButton = {
-                FilledTonalButton(onClick = {
-                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                        data = Uri.parse("package:${context.packageName}")
-                    }
-                    context.startActivity(intent)
-                    showBatteryPrompt = false
-                    kotlinx.coroutines.runBlocking { settings.setFirstInstallPrompted(true) }
-                }) {
-                    Icon(Icons.Filled.VerifiedUser, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text(context.getString(R.string.battery_prompt_grant))
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = {
-                    showBatteryPrompt = false
-                    kotlinx.coroutines.runBlocking { settings.setFirstInstallPrompted(true) }
-                }) { Text(context.getString(R.string.battery_prompt_skip)) }
-            }
-        )
-    }
 
     Scaffold(
         topBar = {
@@ -183,38 +127,32 @@ fun MainScreen() {
             )
         },
         bottomBar = {
-            AnimatedVisibility(
-                visible = isBarVisible,
-                enter = slideInVertically(initialOffsetY = { it }),
-                exit = slideOutVertically(targetOffsetY = { it })
+            NavigationBar(
+                tonalElevation = 8.dp,
+                containerColor = MaterialTheme.colorScheme.surfaceContainerLow
             ) {
-                NavigationBar(
-                    tonalElevation = 8.dp,
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow
-                ) {
-                    NavigationBarItem(
-                        icon = { Icon(Icons.Filled.Home, contentDescription = null) },
-                        label = { Text("Home") },
-                        selected = activeTab == 0,
-                        onClick = { activeTab = 0 },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = MaterialTheme.colorScheme.primary,
-                            selectedTextColor = MaterialTheme.colorScheme.primary,
-                            indicatorColor = MaterialTheme.colorScheme.primaryContainer
-                        )
+                NavigationBarItem(
+                    icon = { Icon(Icons.Filled.Home, contentDescription = null) },
+                    label = { Text("Home") },
+                    selected = activeTab == 0,
+                    onClick = { activeTab = 0 },
+                    colors = NavigationBarItemDefaults.colors(
+                        selectedIconColor = MaterialTheme.colorScheme.primary,
+                        selectedTextColor = MaterialTheme.colorScheme.primary,
+                        indicatorColor = MaterialTheme.colorScheme.primaryContainer
                     )
-                    NavigationBarItem(
-                        icon = { Icon(Icons.Filled.Terminal, contentDescription = null) },
-                        label = { Text("Terminal") },
-                        selected = activeTab == 1,
-                        onClick = { activeTab = 1 },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = MaterialTheme.colorScheme.primary,
-                            selectedTextColor = MaterialTheme.colorScheme.primary,
-                            indicatorColor = MaterialTheme.colorScheme.primaryContainer
-                        )
+                )
+                NavigationBarItem(
+                    icon = { Icon(Icons.Filled.Terminal, contentDescription = null) },
+                    label = { Text("Terminal") },
+                    selected = activeTab == 1,
+                    onClick = { activeTab = 1 },
+                    colors = NavigationBarItemDefaults.colors(
+                        selectedIconColor = MaterialTheme.colorScheme.primary,
+                        selectedTextColor = MaterialTheme.colorScheme.primary,
+                        indicatorColor = MaterialTheme.colorScheme.primaryContainer
                     )
-                }
+                )
             }
         }
     ) { innerPadding ->
@@ -224,8 +162,8 @@ fun MainScreen() {
                 .padding(top = innerPadding.calculateTopPadding())
         ) {
             when (activeTab) {
-                0 -> HomeTab(scrollState = connectScrollState, bottomPadding = innerPadding.calculateBottomPadding())
-                1 -> TerminalTab(listState = terminalListState, bottomPadding = innerPadding.calculateBottomPadding())
+                0 -> HomeTab(bottomPadding = innerPadding.calculateBottomPadding())
+                1 -> TerminalTab(bottomPadding = innerPadding.calculateBottomPadding())
             }
         }
     }
@@ -244,13 +182,12 @@ fun MainScreen() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  HOME TAB — Connection + Presets + Quick Command with URL input
+//  HOME TAB — Connection + Remote + App Selector + Presets by App
 // ═══════════════════════════════════════════════════════════════════════
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeTab(
-    scrollState: ScrollState = rememberScrollState(),
     bottomPadding: Dp = 0.dp
 ) {
     val context = LocalContext.current
@@ -260,13 +197,9 @@ fun HomeTab(
     var tvHost by remember { mutableStateOf("") }
     var tvPort by remember { mutableIntStateOf(SettingsManager.DEFAULT_TV_PORT) }
     var tvName by remember { mutableStateOf("") }
-    var tvConnected by remember { mutableStateOf(false) }
-
+    var connectionVerified by remember { mutableStateOf<Boolean?>(null) }
     var connectionStatus by remember { mutableStateOf<String?>(null) }
     var isTesting by remember { mutableStateOf(false) }
-
-    // Connection verification state: null=not checked, true=verified, false=failed
-    var connectionVerified by remember { mutableStateOf<Boolean?>(null) }
 
     // Discovery state
     val discovery = remember { TvDiscoveryService(context) }
@@ -274,55 +207,56 @@ fun HomeTab(
     var isScanning by remember { mutableStateOf(false) }
     var expandedRowHost by remember { mutableStateOf<String?>(null) }
 
-    // Presets state
-    var presets by remember { mutableStateOf(SettingsManager.BUILT_IN_PRESETS) }
-    var selectedPresetName by remember { mutableStateOf(SettingsManager.DEFAULT_PRESET_NAME) }
-    var presetRefreshKey by remember { mutableIntStateOf(0) }
+    // App selector state
+    var tvApps by remember { mutableStateOf<List<String>>(emptyList()) }
+    var isScanningApps by remember { mutableStateOf(false) }
+    var selectedApp by remember { mutableStateOf("") }
+    var showAppDetail by remember { mutableStateOf(false) }
 
-    // Quick command state
-    var customCommand by remember { mutableStateOf(SettingsManager.DEFAULT_COMMAND) }
-    var inputUrl by remember { mutableStateOf("") }
-    var isRunning by remember { mutableStateOf(false) }
-    var runOutput by remember { mutableStateOf<String?>(null) }
+    // Presets state
+    var allPresets by remember { mutableStateOf(SettingsManager.BUILT_IN_PRESETS) }
+    var presetRefreshKey by remember { mutableIntStateOf(0) }
 
     // Save preset dialog
     var showSaveDialog by remember { mutableStateOf(false) }
     var newPresetName by remember { mutableStateOf("") }
+    var newPresetCommand by remember { mutableStateOf("") }
 
     // Delete preset dialog
     var showDeleteDialog by remember { mutableStateOf(false) }
     var presetToDelete by remember { mutableStateOf<String?>(null) }
 
-    // Load settings and presets, then verify connection in background
+    // Expandable sections
+    var remoteExpanded by remember { mutableStateOf(false) }
+    var appsExpanded by remember { mutableStateOf(false) }
+    var presetsExpanded by remember { mutableStateOf(false) }
+
+    // Load settings and verify connection
     LaunchedEffect(Unit) {
         val h = settings.getTvHost()
         val p = settings.getTvPort()
-        val cmd = settings.getDefaultCommand()
-        val sel = settings.getSelectedPreset()
-        val selName = settings.getSelectedTvName()
+        val n = settings.getSelectedTvName()
         tvHost = h
         tvPort = p
-        tvName = selName
-        customCommand = cmd
-        selectedPresetName = sel
+        tvName = n
         if (h.isNotBlank()) {
-            tvConnected = true // provisional — will verify below
-            // Verify connection in background so user sees real state
             val result = AdbManager.testConnection(context, h, p)
             connectionVerified = result.isSuccess
             if (!result.isSuccess) {
-                // Connection failed — but keep host saved, just update verified state
                 connectionStatus = "Connection lost: ${result.exceptionOrNull()?.message}"
+            }
+            // Auto-start bridge service
+            if (result.isSuccess && !AdbForegroundService.isRunning()) {
+                AdbForegroundService.start(context)
             }
         }
     }
 
-    // Refresh presets when returning to the tab
+    // Refresh presets
     LaunchedEffect(presetRefreshKey) {
-        presets = withContext(Dispatchers.IO) { settings.getAllPresets() }
+        allPresets = withContext(Dispatchers.IO) { settings.getAllPresets() }
     }
 
-    // Also refresh when the composable regains focus
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
@@ -334,7 +268,7 @@ fun HomeTab(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    // Lifecycle-tied discovery scan
+    // Discovery scan
     var scanJob by remember { mutableStateOf<Job?>(null) }
 
     val startScan: () -> Unit = {
@@ -347,7 +281,6 @@ fun HomeTab(
                 }
             } finally {
                 isScanning = false
-                tvConnected = tvHost.isNotBlank()
             }
         }
     }
@@ -363,51 +296,62 @@ fun HomeTab(
     // ── Save Preset Dialog ───────────────────────────────────────────
     if (showSaveDialog) {
         AlertDialog(
-            onDismissRequest = { showSaveDialog = false; newPresetName = "" },
-            title = { Text("Save as Preset") },
+            onDismissRequest = { showSaveDialog = false; newPresetName = ""; newPresetCommand = "" },
+            title = { Text("Create Preset") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (selectedApp.isNotBlank()) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Filled.Apps, contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("For: $selectedApp",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
                     OutlinedTextField(
                         value = newPresetName,
                         onValueChange = { newPresetName = it },
                         label = { Text("Preset name") },
-                        placeholder = { Text("My Custom Command") },
+                        placeholder = { Text("My Preset") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp)
                     )
-                    Text(
-                        "Will save the current command:",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    OutlinedTextField(
+                        value = newPresetCommand,
+                        onValueChange = { newPresetCommand = it },
+                        label = { Text("Shell command") },
+                        placeholder = { Text("""am start -a android.intent.action.VIEW -d "{URL}" -n pkg/.Activity""") },
+                        minLines = 3, maxLines = 8,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        textStyle = TextStyle(fontFamily = FontFamily.Monospace)
                     )
                     Text(
-                        customCommand.take(100) + if (customCommand.length > 100) "..." else "",
-                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                        color = MaterialTheme.colorScheme.primary,
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis
+                        "Use {URL} and {MIME} as placeholders — they get replaced when sharing via ShareSheet.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             },
             confirmButton = {
                 TextButton(onClick = {
-                    if (newPresetName.isNotBlank() && customCommand.isNotBlank()) {
-                        val saved = settings.saveCustomPreset(newPresetName.trim(), customCommand)
+                    if (newPresetName.isNotBlank() && newPresetCommand.isNotBlank()) {
+                        val saved = settings.saveCustomPreset(newPresetName.trim(), newPresetCommand, selectedApp)
                         if (saved) {
                             presetRefreshKey++
-                            selectedPresetName = newPresetName.trim()
-                            scope.launch { settings.setSelectedPreset(selectedPresetName) }
                             Toast.makeText(context, "Preset saved!", Toast.LENGTH_SHORT).show()
                         } else {
                             Toast.makeText(context, "Name conflicts with built-in preset", Toast.LENGTH_SHORT).show()
                         }
                     }
-                    showSaveDialog = false; newPresetName = ""
+                    showSaveDialog = false; newPresetName = ""; newPresetCommand = ""
                 }) { Text("Save") }
             },
             dismissButton = {
-                TextButton(onClick = { showSaveDialog = false; newPresetName = "" }) { Text("Cancel") }
+                TextButton(onClick = { showSaveDialog = false; newPresetName = ""; newPresetCommand = "" }) { Text("Cancel") }
             }
         )
     }
@@ -421,14 +365,6 @@ fun HomeTab(
                 TextButton(onClick = {
                     settings.deleteCustomPreset(presetToDelete!!)
                     presetRefreshKey++
-                    if (selectedPresetName == presetToDelete) {
-                        selectedPresetName = SettingsManager.DEFAULT_PRESET_NAME
-                        customCommand = settings.getPresetCommand(SettingsManager.DEFAULT_PRESET_NAME) ?: SettingsManager.DEFAULT_COMMAND
-                        scope.launch {
-                            settings.setSelectedPreset(selectedPresetName)
-                            settings.setDefaultCommand(customCommand)
-                        }
-                    }
                     showDeleteDialog = false; presetToDelete = null
                     Toast.makeText(context, "Preset deleted", Toast.LENGTH_SHORT).show()
                 }) { Text("Delete") }
@@ -442,7 +378,7 @@ fun HomeTab(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(scrollState)
+            .verticalScroll(rememberScrollState())
             .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp + bottomPadding),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
@@ -453,8 +389,8 @@ fun HomeTab(
             colors = CardDefaults.cardColors(
                 containerColor = when {
                     connectionVerified == true -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
-                    connectionVerified == false -> Color(0x40FFA000) // amber for "lost"
-                    tvHost.isNotBlank() -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f) // checking
+                    connectionVerified == false -> Color(0x40FFA000)
+                    tvHost.isNotBlank() -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f)
                     else -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f)
                 }
             )
@@ -468,15 +404,14 @@ fun HomeTab(
                 Icon(
                     when {
                         connectionVerified == true -> Icons.Filled.CastConnected
-                        connectionVerified == false -> Icons.Filled.CastConnected
-                        tvHost.isNotBlank() -> Icons.Filled.CastConnected // checking
+                        tvHost.isNotBlank() -> Icons.Filled.CastConnected
                         else -> Icons.Filled.Cast
                     },
                     contentDescription = null,
                     tint = when {
                         connectionVerified == true -> MaterialTheme.colorScheme.primary
-                        connectionVerified == false -> Color(0xFFFFA000) // amber
-                        tvHost.isNotBlank() -> MaterialTheme.colorScheme.outline // checking
+                        connectionVerified == false -> Color(0xFFFFA000)
+                        tvHost.isNotBlank() -> MaterialTheme.colorScheme.outline
                         else -> MaterialTheme.colorScheme.error
                     },
                     modifier = Modifier.size(22.dp)
@@ -505,12 +440,6 @@ fun HomeTab(
                             style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
                             color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
                         )
-                    } else {
-                        Text(
-                            "Tap scan below to find your TV",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.7f)
-                        )
                     }
                 }
                 if (tvHost.isNotBlank()) {
@@ -522,10 +451,8 @@ fun HomeTab(
                                 isTesting = false
                                 connectionVerified = result.isSuccess
                                 connectionStatus = if (result.isSuccess) {
-                                    tvConnected = true
                                     "Connected! TV responded: ${result.getOrDefault("")}"
                                 } else {
-                                    tvConnected = false
                                     "Failed: ${result.exceptionOrNull()?.message}"
                                 }
                             }
@@ -574,7 +501,7 @@ fun HomeTab(
         }
 
         // ═══ TV Scan (only shows when not connected) ══════════════════
-        if (!tvConnected || isScanning) {
+        if (connectionVerified != true || isScanning) {
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
@@ -629,18 +556,19 @@ fun HomeTab(
                             tvHost = tv.host
                             tvPort = tv.port
                             tvName = tv.name
-                            tvConnected = true
-                            connectionVerified = null // will verify
+                            connectionVerified = null
                             connectionStatus = null
                             scope.launch {
                                 settings.setTvHost(tv.host)
                                 settings.setTvPort(tv.port)
                                 settings.setSelectedTvName(tv.name)
-                                // Verify this connection actually works
                                 val result = AdbManager.testConnection(context, tv.host, tv.port)
                                 connectionVerified = result.isSuccess
                                 if (result.isSuccess) {
                                     connectionStatus = "Connected! ${tv.name} responded: ${result.getOrDefault("")}"
+                                    if (!AdbForegroundService.isRunning()) {
+                                        AdbForegroundService.start(context)
+                                    }
                                 } else {
                                     connectionStatus = "Connected but ADB failed: ${result.exceptionOrNull()?.message}"
                                 }
@@ -667,11 +595,13 @@ fun HomeTab(
                             if (tv.host == tvHost) {
                                 tvHost = ""
                                 tvName = ""
-                                tvConnected = false
                                 connectionVerified = null
                                 scope.launch {
                                     settings.setTvHost("")
                                     settings.setSelectedTvName("")
+                                }
+                                if (AdbForegroundService.isRunning()) {
+                                    AdbForegroundService.stop(context)
                                 }
                             }
                             Toast.makeText(context, "Forgot ${tv.name}", Toast.LENGTH_SHORT).show()
@@ -692,7 +622,7 @@ fun HomeTab(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 TextButton(onClick = {
-                    tvConnected = false
+                    connectionVerified = null
                     discoveredTvs = emptyList()
                     startScan()
                 }) {
@@ -703,186 +633,467 @@ fun HomeTab(
             }
         }
 
-        // ═══ Presets Section ══════════════════════════════════════════
-        HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
-        SectionHeader(context.getString(R.string.home_presets_section), Icons.Filled.PlaylistPlay)
+        // ═══ Quick Remote (expandable) ═══════════════════════════════
+        if (connectionVerified == true) {
+            HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
 
-        // Preset chips — horizontal scrollable
-        LazyRow(
-            contentPadding = PaddingValues(horizontal = 2.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            items(presets) { preset ->
-                val isSelected = preset.name == selectedPresetName
-                val isBuiltIn = SettingsManager.BUILT_IN_PRESETS.any { it.name == preset.name }
-
-                FilterChip(
-                    selected = isSelected,
-                    onClick = {
-                        selectedPresetName = preset.name
-                        customCommand = preset.command
-                        scope.launch {
-                            settings.setSelectedPreset(preset.name)
-                            settings.setDefaultCommand(preset.command)
-                        }
-                    },
-                    label = { Text(preset.name, style = MaterialTheme.typography.labelMedium) },
-                    leadingIcon = {
-                        Icon(
-                            when {
-                                preset.name == "SmartTube" -> Icons.Filled.SmartDisplay
-                                preset.name == "Open Link" -> Icons.Filled.OpenInNew
-                                preset.name == "Video Player" -> Icons.Filled.PlayCircle
-                                preset.usesFile -> Icons.Filled.FolderOpen
-                                else -> Icons.Filled.Terminal
-                            },
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
-                        )
-                    },
-                    trailingIcon = {
-                        if (!isBuiltIn) {
-                            IconButton(
-                                onClick = { presetToDelete = preset.name; showDeleteDialog = true },
-                                modifier = Modifier.size(16.dp)
-                            ) {
-                                Icon(Icons.Filled.Close, contentDescription = "Delete",
-                                    modifier = Modifier.size(12.dp), tint = MaterialTheme.colorScheme.error)
-                            }
-                        }
-                    },
-                    shape = RoundedCornerShape(10.dp)
-                )
-            }
-        }
-
-        // ═══ Quick Command Section ════════════════════════════════════
-        HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
-        SectionHeader(context.getString(R.string.home_quick_command), Icons.Filled.Terminal)
-
-        // URL input field — this is the KEY addition that makes presets work from home tab
-        OutlinedTextField(
-            value = inputUrl,
-            onValueChange = { inputUrl = it },
-            label = { Text("URL / Link to send") },
-            placeholder = { Text("https://... or magnet:?...") },
-            leadingIcon = { Icon(Icons.Filled.Link, contentDescription = null, modifier = Modifier.size(18.dp)) },
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp),
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(
-                keyboardType = KeyboardType.Uri,
-                imeAction = ImeAction.Next
-            )
-        )
-
-        Text(
-            "Paste a URL above, select a preset, and hit RUN. Tokens {URL} and {MIME} are auto-replaced. Without a URL, the command runs as-is.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-
-        OutlinedTextField(
-            value = customCommand,
-            onValueChange = {
-                customCommand = it
-                val matchingPreset = presets.find { p -> p.command == it }
-                if (matchingPreset == null) selectedPresetName = "Custom"
-                else selectedPresetName = matchingPreset.name
-                scope.launch { settings.setDefaultCommand(it) }
-            },
-            label = { Text("Shell Command") },
-            placeholder = { Text("""am start -a android.intent.action.VIEW -d "{URL}"""") },
-            minLines = 3, maxLines = 8,
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp),
-            textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace)
-        )
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Button(
-                onClick = {
-                    if (customCommand.isBlank()) { runOutput = "Command cannot be empty"; return@Button }
-                    if (tvHost.isBlank()) { runOutput = "No TV connected — scan or set IP in settings"; return@Button }
-
-                    // Build the final command: substitute tokens if URL is provided
-                    val finalCommand = if (inputUrl.isNotBlank()) {
-                        val mime = AdbManager.resolveMimeType(null, inputUrl)
-                        AdbManager.prepareCommand(customCommand, inputUrl, mime)
-                    } else {
-                        customCommand
-                    }
-
-                    isRunning = true; runOutput = null
-                    scope.launch {
-                        val result = AdbManager.executeShell(context, tvHost, tvPort, finalCommand)
-                        isRunning = false
-                        if (result.isSuccess) {
-                            val output = result.getOrDefault("")
-                            runOutput = "OK: $output"
-                            connectionVerified = true // connection works
-                            val logStore = CommandLogStore(context)
-                            logStore.addLog(finalCommand, true)
-                            Toast.makeText(context, output, Toast.LENGTH_SHORT).show()
-                        } else {
-                            val err = result.exceptionOrNull()?.message ?: "Unknown error"
-                            runOutput = "FAIL: $err"
-                            val logStore = CommandLogStore(context)
-                            logStore.addLog(finalCommand, false)
-                            Toast.makeText(context, err, Toast.LENGTH_LONG).show()
-                        }
-                    }
-                },
-                enabled = !isRunning,
-                modifier = Modifier.weight(1f),
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
             ) {
-                Icon(Icons.Filled.PlayArrow, contentDescription = null)
-                Spacer(Modifier.width(6.dp))
-                Text(if (isRunning) "Running..." else "RUN", style = MaterialTheme.typography.titleMedium)
-            }
-
-            OutlinedButton(
-                onClick = { showSaveDialog = true },
-                enabled = customCommand.isNotBlank(),
-                modifier = Modifier.weight(1f),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Icon(Icons.Filled.Save, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(6.dp))
-                Text(context.getString(R.string.home_save_preset))
-            }
-        }
-
-        // Run output
-        AnimatedVisibility(
-            visible = runOutput != null,
-            enter = expandVertically() + fadeIn(),
-            exit = shrinkVertically() + fadeOut()
-        ) {
-            runOutput?.let {
-                Card(modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (it.startsWith("OK")) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.errorContainer
-                    )
-                ) {
+                Column {
                     Row(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.Top
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { remoteExpanded = !remoteExpanded }
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(it, modifier = Modifier.weight(1f),
-                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                            color = if (it.startsWith("OK")) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onErrorContainer)
-                        IconButton(onClick = { runOutput = null }, modifier = Modifier.size(20.dp)) {
-                            Icon(Icons.Filled.Close, contentDescription = "Dismiss", modifier = Modifier.size(14.dp))
+                        Icon(Icons.Filled.SettingsRemote, contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(10.dp))
+                        Text("Quick Remote", style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
+                        Icon(
+                            if (remoteExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    AnimatedVisibility(visible = remoteExpanded, enter = expandVertically(), exit = shrinkVertically()) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            // D-pad
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                RemoteButton("↑", "input keyevent KEYCODE_DPAD_UP", tvHost, tvPort, scope, context)
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                RemoteButton("←", "input keyevent KEYCODE_DPAD_LEFT", tvHost, tvPort, scope, context)
+                                Spacer(Modifier.width(8.dp))
+                                RemoteButton("OK", "input keyevent KEYCODE_ENTER", tvHost, tvPort, scope, context)
+                                Spacer(Modifier.width(8.dp))
+                                RemoteButton("→", "input keyevent KEYCODE_DPAD_RIGHT", tvHost, tvPort, scope, context)
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                RemoteButton("↓", "input keyevent KEYCODE_DPAD_DOWN", tvHost, tvPort, scope, context)
+                            }
+
+                            HorizontalDivider()
+
+                            // Navigation + Volume row
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceEvenly
+                            ) {
+                                RemoteButton("Home", "input keyevent KEYCODE_HOME", tvHost, tvPort, scope, context)
+                                RemoteButton("Back", "input keyevent KEYCODE_BACK", tvHost, tvPort, scope, context)
+                                RemoteButton("Vol+", "input keyevent KEYCODE_VOLUME_UP", tvHost, tvPort, scope, context)
+                                RemoteButton("Vol-", "input keyevent KEYCODE_VOLUME_DOWN", tvHost, tvPort, scope, context)
+                            }
+
+                            // Power row
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                RemoteButton("Power", "input keyevent KEYCODE_POWER", tvHost, tvPort, scope, context)
+                            }
                         }
                     }
                 }
+            }
+        }
+
+        // ═══ TV App Selector (expandable) ════════════════════════════
+        if (connectionVerified == true) {
+            HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+            ) {
+                Column {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { appsExpanded = !appsExpanded }
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Filled.Apps, contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("TV Apps", style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.primary)
+                            if (selectedApp.isNotBlank()) {
+                                Text(selectedApp,
+                                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                        Icon(
+                            if (appsExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    AnimatedVisibility(visible = appsExpanded, enter = expandVertically(), exit = shrinkVertically()) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            // Scan apps button
+                            OutlinedButton(
+                                onClick = {
+                                    isScanningApps = true
+                                    scope.launch {
+                                        val result = AdbManager.executeShell(context, tvHost, tvPort, "pm list packages -3")
+                                        isScanningApps = false
+                                        if (result.isSuccess) {
+                                            val output = result.getOrDefault("")
+                                            tvApps = output.lines()
+                                                .map { it.removePrefix("package:").trim() }
+                                                .filter { it.isNotBlank() }
+                                                .sorted()
+                                            if (tvApps.isEmpty()) {
+                                                Toast.makeText(context, "No third-party apps found", Toast.LENGTH_SHORT).show()
+                                            }
+                                        } else {
+                                            Toast.makeText(context, "Failed: ${result.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
+                                        }
+                                    }
+                                },
+                                enabled = !isScanningApps,
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                if (isScanningApps) {
+                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                } else {
+                                    Icon(Icons.Filled.Search, contentDescription = null, modifier = Modifier.size(16.dp))
+                                }
+                                Spacer(Modifier.width(8.dp))
+                                Text(if (isScanningApps) "Scanning..." else if (tvApps.isEmpty()) "Scan TV Apps" else "Rescan TV Apps")
+                            }
+
+                            // App list
+                            if (tvApps.isNotEmpty()) {
+                                LazyColumn(
+                                    modifier = Modifier.heightIn(max = 240.dp),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                                ) {
+                                    items(tvApps) { pkg ->
+                                        val isSelected = pkg == selectedApp
+                                        Surface(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    selectedApp = if (isSelected) "" else pkg
+                                                    showAppDetail = selectedApp.isNotBlank()
+                                                },
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = if (isSelected)
+                                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
+                                            else Color.Transparent
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Icon(
+                                                    if (isSelected) Icons.Filled.CheckCircle else Icons.Filled.Android,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(16.dp),
+                                                    tint = if (isSelected) MaterialTheme.colorScheme.primary
+                                                    else MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                                Spacer(Modifier.width(8.dp))
+                                                Text(
+                                                    pkg,
+                                                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                                    maxLines = 1, overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ═══ App Detail (when app selected) ════════════════════════
+            if (selectedApp.isNotBlank() && appsExpanded) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f)
+                    )
+                ) {
+                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Filled.Android, contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(selectedApp,
+                                style = MaterialTheme.typography.titleSmall.copy(fontFamily = FontFamily.Monospace),
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f))
+                        }
+
+                        // Action buttons
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            // Launch on TV
+                            OutlinedButton(
+                                onClick = {
+                                    scope.launch {
+                                        val cmd = "monkey -p $selectedApp -c android.intent.category.LAUNCHER 1"
+                                        val result = AdbManager.executeShell(context, tvHost, tvPort, cmd)
+                                        if (result.isSuccess) {
+                                            Toast.makeText(context, "Launched!", Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            Toast.makeText(context, "Failed: ${result.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
+                                        }
+                                    }
+                                },
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Launch", style = MaterialTheme.typography.labelMedium)
+                            }
+
+                            // Create Preset
+                            Button(
+                                onClick = {
+                                    newPresetName = ""
+                                    newPresetCommand = settings.buildPresetFromPackage("", selectedApp)
+                                    showSaveDialog = true
+                                },
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Preset", style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
+
+                        // Presets for this app
+                        val appPresets = allPresets.filter { it.appPackage == selectedApp }
+                        if (appPresets.isNotEmpty()) {
+                            HorizontalDivider()
+                            Text("Presets for this app", style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            appPresets.forEach { preset ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(Icons.Filled.PlaylistPlay, contentDescription = null,
+                                        modifier = Modifier.size(14.dp),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Spacer(Modifier.width(6.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(preset.name, style = MaterialTheme.typography.bodySmall)
+                                        Text(preset.command.take(60) + if (preset.command.length > 60) "..." else "",
+                                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    }
+                                    IconButton(
+                                        onClick = { presetToDelete = preset.name; showDeleteDialog = true },
+                                        modifier = Modifier.size(20.dp)
+                                    ) {
+                                        Icon(Icons.Filled.Delete, contentDescription = "Delete",
+                                            modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.error)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ═══ Presets (expandable, grouped by app) ════════════════════
+        HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+        ) {
+            Column {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { presetsExpanded = !presetsExpanded }
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Filled.PlaylistPlay, contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(10.dp))
+                    Text("Presets", style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
+                    Text("${allPresets.size}", style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.width(8.dp))
+                    Icon(
+                        if (presetsExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                AnimatedVisibility(visible = presetsExpanded, enter = expandVertically(), exit = shrinkVertically()) {
+                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp)) {
+                        // General presets (built-in + no app)
+                        val generalPresets = allPresets.filter { it.appPackage.isBlank() }
+                        if (generalPresets.isNotEmpty()) {
+                            Text("General", style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Spacer(Modifier.height(4.dp))
+                            generalPresets.forEach { preset ->
+                                PresetRow(
+                                    preset = preset,
+                                    isBuiltIn = SettingsManager.BUILT_IN_PRESETS.any { it.name == preset.name },
+                                    onDelete = { presetToDelete = preset.name; showDeleteDialog = true }
+                                )
+                            }
+                            Spacer(Modifier.height(8.dp))
+                        }
+
+                        // App-specific presets grouped by app
+                        val appPresets = allPresets.filter { it.appPackage.isNotBlank() }
+                        val grouped = appPresets.groupBy { it.appPackage }
+                        grouped.forEach { (pkg, presets) ->
+                            Text(pkg, style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace),
+                                color = MaterialTheme.colorScheme.primary)
+                            Spacer(Modifier.height(4.dp))
+                            presets.forEach { preset ->
+                                PresetRow(
+                                    preset = preset,
+                                    isBuiltIn = false,
+                                    onDelete = { presetToDelete = preset.name; showDeleteDialog = true }
+                                )
+                            }
+                            Spacer(Modifier.height(8.dp))
+                        }
+
+                        // Create general preset button
+                        OutlinedButton(
+                            onClick = {
+                                selectedApp = ""
+                                newPresetName = ""
+                                newPresetCommand = ""
+                                showSaveDialog = true
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Create General Preset")
+                        }
+
+                        Spacer(Modifier.height(4.dp))
+
+                        Text(
+                            "Select presets via Quick Settings tile. Presets are used when sharing content through Android ShareSheet.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RemoteButton(
+    label: String,
+    command: String,
+    tvHost: String,
+    tvPort: Int,
+    scope: kotlinx.coroutines.CoroutineScope,
+    context: android.content.Context
+) {
+    FilledTonalButton(
+        onClick = {
+            scope.launch {
+                AdbManager.executeShell(context, tvHost, tvPort, command)
+            }
+        },
+        shape = RoundedCornerShape(10.dp),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+        modifier = Modifier.height(36.dp)
+    ) {
+        Text(label, style = MaterialTheme.typography.labelMedium)
+    }
+}
+
+@Composable
+private fun PresetRow(
+    preset: SettingsManager.Preset,
+    isBuiltIn: Boolean,
+    onDelete: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            when {
+                preset.name == "Open Link" -> Icons.Filled.OpenInNew
+                preset.name == "Video Player" -> Icons.Filled.PlayCircle
+                preset.usesFile -> Icons.Filled.FolderOpen
+                else -> Icons.Filled.Terminal
+            },
+            contentDescription = null,
+            modifier = Modifier.size(14.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.width(6.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(preset.name, style = MaterialTheme.typography.bodySmall)
+            Text(preset.command.take(60) + if (preset.command.length > 60) "..." else "",
+                style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        if (!isBuiltIn) {
+            IconButton(onClick = onDelete, modifier = Modifier.size(20.dp)) {
+                Icon(Icons.Filled.Delete, contentDescription = "Delete",
+                    modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.error)
             }
         }
     }
@@ -900,12 +1111,12 @@ private data class TerminalLine(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TerminalTab(
-    listState: LazyListState = rememberLazyListState(),
     bottomPadding: Dp = 0.dp
 ) {
     val context = LocalContext.current
     val settings = remember { SettingsManager(context) }
     val scope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
 
     var tvHost by remember { mutableStateOf("") }
     var tvPort by remember { mutableIntStateOf(SettingsManager.DEFAULT_TV_PORT) }
@@ -962,13 +1173,9 @@ fun TerminalTab(
                 if (output.isNotBlank()) {
                     output.split("\n").forEach { append(TerminalLine("out", it)) }
                 }
-                val logStore = CommandLogStore(context)
-                logStore.addLog(cmd, true)
             } else {
                 val err = result.exceptionOrNull()?.message ?: "Unknown error"
                 append(TerminalLine("err", err))
-                val logStore = CommandLogStore(context)
-                logStore.addLog(cmd, false)
             }
         }
     }
@@ -1010,7 +1217,6 @@ fun TerminalTab(
                 "Model" to "getprop ro.product.model",
                 "Android" to "getprop ro.build.version.release",
                 "Res" to "wm size",
-                "Awake" to "dumpsys power | grep 'mWakefulness'",
                 "Apps" to "pm list packages -3",
                 "Reboot" to "reboot"
             )
@@ -1106,7 +1312,7 @@ fun TerminalTab(
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  SETTINGS SHEET — Clean: Manual Connection + Backup/Restore only
+//  SETTINGS SHEET — Expandable sections: Connection, Appearance, Backup, About
 // ═══════════════════════════════════════════════════════════════════════
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -1123,15 +1329,29 @@ fun SettingsSheet(onClose: () -> Unit) {
     var isTesting by remember { mutableStateOf(false) }
     var connectionStatus by remember { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(Unit) {
-        tvHost = settings.getTvHost()
-        tvPort = settings.getTvPort()
-        tvName = settings.getSelectedTvName()
-    }
+    // Expandable states
+    var connectionExpanded by remember { mutableStateOf(false) }
+    var appearanceExpanded by remember { mutableStateOf(false) }
+    var aboutExpanded by remember { mutableStateOf(false) }
+
+    // Theme mode
+    var currentTheme by remember { mutableStateOf(SettingsManager.THEME_SYSTEM) }
 
     // Import presets dialog
     var showImportDialog by remember { mutableStateOf(false) }
     var importJson by remember { mutableStateOf("") }
+
+    LaunchedEffect(Unit) {
+        tvHost = settings.getTvHost()
+        tvPort = settings.getTvPort()
+        tvName = settings.getSelectedTvName()
+        currentTheme = settings.getThemeMode()
+    }
+
+    // Listen for theme changes
+    LaunchedEffect(Unit) {
+        settings.themeMode.collect { mode -> currentTheme = mode }
+    }
 
     if (showImportDialog) {
         AlertDialog(
@@ -1146,7 +1366,7 @@ fun SettingsSheet(onClose: () -> Unit) {
                     minLines = 5, maxLines = 15,
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
-                    textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace)
+                    textStyle = TextStyle(fontFamily = FontFamily.Monospace)
                 )
             },
             confirmButton = {
@@ -1155,7 +1375,7 @@ fun SettingsSheet(onClose: () -> Unit) {
                     if (count > 0) {
                         Toast.makeText(context, "Imported $count preset(s)!", Toast.LENGTH_SHORT).show()
                     } else if (count == 0) {
-                        Toast.makeText(context, "No new presets to import (all names exist)", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "No new presets to import", Toast.LENGTH_SHORT).show()
                     } else {
                         Toast.makeText(context, "Invalid JSON format", Toast.LENGTH_SHORT).show()
                     }
@@ -1174,7 +1394,7 @@ fun SettingsSheet(onClose: () -> Unit) {
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp)
             .padding(top = 4.dp, bottom = 24.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         // ── Sheet header ─────────────────────────────────────────────
         Row(
@@ -1200,15 +1420,21 @@ fun SettingsSheet(onClose: () -> Unit) {
         }
 
         // ═══════════════════════════════════════════════════════════════
-        //  MANUAL CONNECTION
+        //  MANUAL CONNECTION (expandable, collapsed by default)
         // ═══════════════════════════════════════════════════════════════
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(16.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
         ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+            Column {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { connectionExpanded = !connectionExpanded }
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Icon(Icons.Filled.Edit, contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
                     Spacer(Modifier.width(10.dp))
@@ -1224,89 +1450,170 @@ fun SettingsSheet(onClose: () -> Unit) {
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                    Icon(
+                        if (connectionExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
-                Spacer(Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = tvHost,
-                    onValueChange = {
-                        tvHost = it
-                        scope.launch {
-                            settings.setTvHost(it)
-                            settings.setSelectedTvName("")
-                        }
-                    },
-                    label = { Text("TV IP Address") },
-                    placeholder = { Text("192.168.1.123") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp)
-                )
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = tvPort.toString(),
-                    onValueChange = {
-                        val p = it.toIntOrNull()
-                        if (p != null && p in 1..65535) {
-                            tvPort = p
-                            scope.launch { settings.setTvPort(p) }
-                        }
-                    },
-                    label = { Text("Connection Port") },
-                    placeholder = { Text("5555") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp)
-                )
-                Spacer(Modifier.height(8.dp))
 
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = {
-                            if (tvHost.isBlank()) { connectionStatus = "Enter TV IP first"; return@Button }
-                            isTesting = true; connectionStatus = null
-                            scope.launch {
-                                val result = AdbManager.testConnection(context, tvHost, tvPort)
-                                isTesting = false
-                                connectionStatus = if (result.isSuccess) {
-                                    "Connected! TV responded: ${result.getOrDefault("")}"
-                                } else {
-                                    "Failed: ${result.exceptionOrNull()?.message}"
+                AnimatedVisibility(visible = connectionExpanded, enter = expandVertically(), exit = shrinkVertically()) {
+                    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                        OutlinedTextField(
+                            value = tvHost,
+                            onValueChange = {
+                                tvHost = it
+                                scope.launch {
+                                    settings.setTvHost(it)
+                                    settings.setSelectedTvName("")
+                                }
+                            },
+                            label = { Text("TV IP Address") },
+                            placeholder = { Text("192.168.1.123") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = tvPort.toString(),
+                            onValueChange = {
+                                val p = it.toIntOrNull()
+                                if (p != null && p in 1..65535) {
+                                    tvPort = p
+                                    scope.launch { settings.setTvPort(p) }
+                                }
+                            },
+                            label = { Text("Connection Port") },
+                            placeholder = { Text("5555") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        Spacer(Modifier.height(8.dp))
+
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = {
+                                    if (tvHost.isBlank()) { connectionStatus = "Enter TV IP first"; return@Button }
+                                    isTesting = true; connectionStatus = null
+                                    scope.launch {
+                                        val result = AdbManager.testConnection(context, tvHost, tvPort)
+                                        isTesting = false
+                                        connectionStatus = if (result.isSuccess) {
+                                            "Connected! TV responded: ${result.getOrDefault("")}"
+                                        } else {
+                                            "Failed: ${result.exceptionOrNull()?.message}"
+                                        }
+                                    }
+                                },
+                                enabled = !isTesting && tvHost.isNotBlank(),
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Icon(Icons.Filled.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text(if (isTesting) "Testing..." else "Test Connection")
+                            }
+                        }
+
+                        connectionStatus?.let { status ->
+                            Spacer(Modifier.height(8.dp))
+                            Card(
+                                shape = RoundedCornerShape(8.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (status.startsWith("Connected"))
+                                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+                                    else MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f)
+                                )
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(status, style = MaterialTheme.typography.bodySmall,
+                                        color = if (status.startsWith("Connected")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.weight(1f))
+                                    IconButton(onClick = { connectionStatus = null }, modifier = Modifier.size(18.dp)) {
+                                        Icon(Icons.Filled.Close, contentDescription = null, modifier = Modifier.size(12.dp))
+                                    }
                                 }
                             }
-                        },
-                        enabled = !isTesting && tvHost.isNotBlank(),
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Icon(Icons.Filled.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text(if (isTesting) "Testing..." else "Test Connection")
+                        }
+                        Spacer(Modifier.height(12.dp))
                     }
                 }
+            }
+        }
 
-                // Connection test result
-                connectionStatus?.let { status ->
-                    Spacer(Modifier.height(8.dp))
-                    Card(
-                        shape = RoundedCornerShape(8.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = if (status.startsWith("Connected"))
-                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
-                            else MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f)
-                        )
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(status, style = MaterialTheme.typography.bodySmall,
-                                color = if (status.startsWith("Connected")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-                                modifier = Modifier.weight(1f))
-                            IconButton(onClick = { connectionStatus = null }, modifier = Modifier.size(18.dp)) {
-                                Icon(Icons.Filled.Close, contentDescription = null, modifier = Modifier.size(12.dp))
-                            }
+        // ═══════════════════════════════════════════════════════════════
+        //  APPEARANCE (expandable)
+        // ═══════════════════════════════════════════════════════════════
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            Column {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { appearanceExpanded = !appearanceExpanded }
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Filled.Palette, contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(10.dp))
+                    Text("Appearance", style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
+                    Icon(
+                        if (appearanceExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                AnimatedVisibility(visible = appearanceExpanded, enter = expandVertically(), exit = shrinkVertically()) {
+                    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                        Text("Theme", style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(Modifier.height(6.dp))
+
+                        // Theme options
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            ThemeOptionButton(
+                                label = "System",
+                                icon = Icons.Filled.BrightnessAuto,
+                                isSelected = currentTheme == SettingsManager.THEME_SYSTEM,
+                                onClick = {
+                                    scope.launch { settings.setThemeMode(SettingsManager.THEME_SYSTEM) }
+                                },
+                                modifier = Modifier.weight(1f)
+                            )
+                            ThemeOptionButton(
+                                label = "Light",
+                                icon = Icons.Filled.LightMode,
+                                isSelected = currentTheme == SettingsManager.THEME_LIGHT,
+                                onClick = {
+                                    scope.launch { settings.setThemeMode(SettingsManager.THEME_LIGHT) }
+                                },
+                                modifier = Modifier.weight(1f)
+                            )
+                            ThemeOptionButton(
+                                label = "Dark",
+                                icon = Icons.Filled.DarkMode,
+                                isSelected = currentTheme == SettingsManager.THEME_DARK,
+                                onClick = {
+                                    scope.launch { settings.setThemeMode(SettingsManager.THEME_DARK) }
+                                },
+                                modifier = Modifier.weight(1f)
+                            )
                         }
+                        Spacer(Modifier.height(12.dp))
                     }
                 }
             }
@@ -1358,21 +1665,117 @@ fun SettingsSheet(onClose: () -> Unit) {
                 }
             }
         }
+
+        // ═══════════════════════════════════════════════════════════════
+        //  ABOUT (expandable)
+        // ═══════════════════════════════════════════════════════════════
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            Column {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { aboutExpanded = !aboutExpanded }
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Filled.Info, contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(10.dp))
+                    Text("About", style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
+                    Icon(
+                        if (aboutExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                AnimatedVisibility(visible = aboutExpanded, enter = expandVertically(), exit = shrinkVertically()) {
+                    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Filled.Smartphone, contentDescription = null,
+                                modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                            Spacer(Modifier.width(8.dp))
+                            Text("ADB Commander", style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurface)
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        DetailRow("Version", "2.5.0")
+                        DetailRow("Build", "35")
+                        Spacer(Modifier.height(8.dp))
+
+                        Text("Changelog", style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "v2.5.0 — App Selector, Quick Remote, presets by app, theme settings, auto-start bridge, UI fixes\n\n" +
+                            "v2.4.0 — URL token substitution, preset template system\n\n" +
+                            "v2.3.0 — Dual share-sheet targets, preset Quick Settings tile, TV auto-discovery\n\n" +
+                            "v2.2.0 — HTTP file streaming, device name resolution, hard scan timeout\n\n" +
+                            "v2.0.0 — Foreground service, quick settings tile, connection management",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(8.dp))
+
+                        // GitHub link
+                        OutlinedButton(
+                            onClick = {
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/AiCurv/ADBCommander"))
+                                context.startActivity(intent)
+                            },
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Filled.Code, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("GitHub")
+                        }
+                        Spacer(Modifier.height(12.dp))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ThemeOptionButton(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    OutlinedButton(
+        onClick = onClick,
+        shape = RoundedCornerShape(12.dp),
+        modifier = modifier,
+        colors = ButtonDefaults.outlinedButtonColors(
+            containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+            else MaterialTheme.colorScheme.surface
+        ),
+        border = if (isSelected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
+        else BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp),
+                tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(4.dp))
+            Text(label, style = MaterialTheme.typography.labelSmall,
+                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
 //  SHARED COMPOSABLES
 // ═══════════════════════════════════════════════════════════════════════
-
-@Composable
-fun SectionHeader(title: String, icon: androidx.compose.ui.graphics.vector.ImageVector) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
-        Spacer(Modifier.width(6.dp))
-        Text(title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
-    }
-}
 
 @Composable
 fun DiscoveredTvRow(
@@ -1458,3 +1861,5 @@ fun DetailRow(label: String, value: String) {
         Text(value, style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace))
     }
 }
+
+

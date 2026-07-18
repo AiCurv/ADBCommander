@@ -28,6 +28,7 @@ class SettingsManager(private val context: Context) {
         val KEY_CONTENT_TYPE = stringPreferencesKey("content_type")
         val KEY_SELECTED_TV_NAME = stringPreferencesKey("selected_tv_name")
         val KEY_FIRST_INSTALL = booleanPreferencesKey("first_install_prompted")
+        val KEY_THEME_MODE = stringPreferencesKey("theme_mode")
 
         const val DEFAULT_TV_HOST = ""
         const val DEFAULT_TV_PORT = 5555
@@ -35,8 +36,12 @@ class SettingsManager(private val context: Context) {
         const val DEFAULT_AUTO_EXECUTE = false
         const val CONTENT_TYPE_URL = "url"
         const val CONTENT_TYPE_FILE = "file"
-
         const val DEFAULT_PRESET_NAME = "Open Link"
+
+        // Theme mode constants
+        const val THEME_SYSTEM = "system"
+        const val THEME_LIGHT = "light"
+        const val THEME_DARK = "dark"
 
         // ── Preset constants ─────────────────────────────────────────
         private const val PRESETS_PREFS_NAME = "adb_commander_presets"
@@ -64,11 +69,8 @@ class SettingsManager(private val context: Context) {
             }
         }
 
-        // Built-in presets covering generic use cases any user can benefit from.
-        // Templates use double-quoted tokens like "{URL}" for maximum
-        // compatibility — double quotes in am start -d work reliably for
-        // magnet links, HTTP URLs with query params, and all URI schemes.
-        // No app-specific presets here — users create their own via "Save as Preset".
+        // Built-in presets — generic, not app-specific.
+        // Users create their own app-specific presets via the App Selector.
         val BUILT_IN_PRESETS = listOf(
             Preset(
                 "Open Link",
@@ -77,15 +79,15 @@ class SettingsManager(private val context: Context) {
             Preset(
                 "Video Player",
                 """am start -a android.intent.action.VIEW -d "{URL}" -t "{MIME}""""
-            ),
-            Preset(
-                "SmartTube",
-                """am start -a android.intent.action.VIEW -d "{URL}" -n org.smarttube.stable/com.liskovsoft.smartyoutubetv2.tv.ui.main.SplashActivity"""
             )
         )
     }
 
-    data class Preset(val name: String, val command: String) {
+    data class Preset(
+        val name: String,
+        val command: String,
+        val appPackage: String = ""
+    ) {
         val usesFile: Boolean get() = command.contains("{FILE}")
         val usesUrl: Boolean get() = command.contains("{URL}")
     }
@@ -100,6 +102,7 @@ class SettingsManager(private val context: Context) {
     val contentType = context.dataStore.data.map { it[KEY_CONTENT_TYPE] ?: CONTENT_TYPE_URL }
     val selectedTvName = context.dataStore.data.map { it[KEY_SELECTED_TV_NAME] ?: "" }
     val firstInstallPrompted = context.dataStore.data.map { it[KEY_FIRST_INSTALL] ?: false }
+    val themeMode = context.dataStore.data.map { it[KEY_THEME_MODE] ?: THEME_SYSTEM }
 
     suspend fun getTvHost(): String = tvHost.first()
     suspend fun getTvPort(): Int = tvPort.first()
@@ -109,6 +112,7 @@ class SettingsManager(private val context: Context) {
     suspend fun getContentType(): String = contentType.first()
     suspend fun getSelectedTvName(): String = selectedTvName.first()
     suspend fun isFirstInstallPrompted(): Boolean = firstInstallPrompted.first()
+    suspend fun getThemeMode(): String = themeMode.first()
 
     suspend fun setTvHost(host: String) { context.dataStore.edit { it[KEY_TV_HOST] = host } }
     suspend fun setTvPort(port: Int) { context.dataStore.edit { it[KEY_TV_PORT] = port } }
@@ -118,6 +122,7 @@ class SettingsManager(private val context: Context) {
     suspend fun setContentType(type: String) { context.dataStore.edit { it[KEY_CONTENT_TYPE] = type } }
     suspend fun setSelectedTvName(name: String) { context.dataStore.edit { it[KEY_SELECTED_TV_NAME] = name } }
     suspend fun setFirstInstallPrompted(prompted: Boolean) { context.dataStore.edit { it[KEY_FIRST_INSTALL] = prompted } }
+    suspend fun setThemeMode(mode: String) { context.dataStore.edit { it[KEY_THEME_MODE] = mode } }
 
 
     // ── Preset management via SharedPreferences ──────────────────────
@@ -127,16 +132,21 @@ class SettingsManager(private val context: Context) {
         return BUILT_IN_PRESETS + customPresets
     }
 
-    fun saveCustomPreset(name: String, command: String): Boolean {
+    fun getPresetsForApp(packageName: String): List<Preset> {
+        if (packageName.isBlank()) return emptyList()
+        return loadCustomPresets().filter { it.appPackage == packageName }
+    }
+
+    fun saveCustomPreset(name: String, command: String, appPackage: String = ""): Boolean {
         if (name.isBlank()) return false
         if (BUILT_IN_PRESETS.any { it.name.equals(name, ignoreCase = true) }) return false
 
         val presets = loadCustomPresets().toMutableList()
         val existingIndex = presets.indexOfFirst { it.name.equals(name, ignoreCase = true) }
         if (existingIndex >= 0) {
-            presets[existingIndex] = Preset(name, command)
+            presets[existingIndex] = Preset(name, command, appPackage)
         } else {
-            presets.add(Preset(name, command))
+            presets.add(Preset(name, command, appPackage))
         }
 
         saveCustomPresets(presets)
@@ -157,13 +167,6 @@ class SettingsManager(private val context: Context) {
 
     /**
      * Build an `am start` command from package exploration data.
-     *
-     * v2.4.0 FIX: When only the package name is known (no specific activity),
-     * uses -n pkg/.MainActivity as the default component target — this is the
-     * standard Android shorthand for "launch the default main activity of this
-     * package". Previously appended the package as a bare argument which
-     * produced invalid `am start` commands.
-     *
      * Templates use double-quoted tokens ("{URL}", "{MIME}") for maximum
      * compatibility with magnet links and URLs containing special characters.
      */
@@ -183,7 +186,6 @@ class SettingsManager(private val context: Context) {
         if (component.isNotBlank()) {
             sb.append(" -n $component")
         } else if (packageName.isNotBlank()) {
-            // Default to launching the package's main activity
             sb.append(" -n $packageName/.MainActivity")
         }
         return sb.toString()
@@ -195,7 +197,11 @@ class SettingsManager(private val context: Context) {
             val arr = JSONArray(json)
             (0 until arr.length()).map { i ->
                 val obj = arr.getJSONObject(i)
-                Preset(obj.getString("name"), obj.getString("command"))
+                Preset(
+                    name = obj.getString("name"),
+                    command = obj.getString("command"),
+                    appPackage = obj.optString("appPackage", "")
+                )
             }
         } catch (e: Exception) {
             emptyList()
@@ -208,6 +214,7 @@ class SettingsManager(private val context: Context) {
             val obj = JSONObject()
             obj.put("name", p.name)
             obj.put("command", p.command)
+            obj.put("appPackage", p.appPackage)
             arr.put(obj)
         }
         presetsPrefs(context).edit().putString(KEY_PRESETS_JSON, arr.toString()).commit()
@@ -220,6 +227,7 @@ class SettingsManager(private val context: Context) {
             val obj = JSONObject()
             obj.put("name", p.name)
             obj.put("command", p.command)
+            obj.put("appPackage", p.appPackage)
             arr.put(obj)
         }
         val root = JSONObject()
@@ -236,7 +244,8 @@ class SettingsManager(private val context: Context) {
                 val obj = arr.getJSONObject(i)
                 val name = obj.getString("name")
                 val command = obj.getString("command")
-                if (saveCustomPreset(name, command)) {
+                val appPackage = obj.optString("appPackage", "")
+                if (saveCustomPreset(name, command, appPackage)) {
                     count++
                 }
             }
