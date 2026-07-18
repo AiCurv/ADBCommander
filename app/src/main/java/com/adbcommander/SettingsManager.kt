@@ -64,13 +64,11 @@ class SettingsManager(private val context: Context) {
             }
         }
 
-        // v2.4.0: Expanded built-in presets covering major use cases.
+        // Built-in presets covering generic use cases any user can benefit from.
         // Templates use double-quoted tokens like "{URL}" for maximum
         // compatibility — double quotes in am start -d work reliably for
         // magnet links, HTTP URLs with query params, and all URI schemes.
-        // AdbManager.prepareCommand detects the quoting context and escapes
-        // accordingly (double-quote escaping for "{URL}", single-quote
-        // escaping for bare {URL}).
+        // No app-specific presets here — users create their own via "Save as Preset".
         val BUILT_IN_PRESETS = listOf(
             Preset(
                 "Open Link",
@@ -83,10 +81,6 @@ class SettingsManager(private val context: Context) {
             Preset(
                 "SmartTube",
                 """am start -a android.intent.action.VIEW -d "{URL}" -n org.smarttube.stable/com.liskovsoft.smartyoutubetv2.tv.ui.main.SplashActivity"""
-            ),
-            Preset(
-                "CloudStream",
-                """am start -a android.intent.action.VIEW -d "{URL}" -t "{MIME}" -n com.lagradost.cloudstream3.prerelease/.MainActivity"""
             )
         )
     }

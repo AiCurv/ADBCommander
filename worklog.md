@@ -205,3 +205,34 @@ Stage Summary:
 - 5 files modified: MainActivity.kt, SettingsManager.kt, build.gradle.kts, developer-context.md, build.yml
 - Version: v2.3.0 / code 33
 - CI run ID: 29628148931, Artifact: app-debug (23.7 MB)
+
+---
+Task ID: 2
+Agent: Main Agent (Super Z)
+Task: Fix broken presets, video/magnet link commands, declutter home tab, add app selector, enhance notification
+
+Work Log:
+- Read all source files: MainActivity.kt (1977 lines), AdbManager.kt, SettingsManager.kt, ShareReceiverActivity.kt, AdbForegroundService.kt, PresetPickerActivity.kt, AdbTileService.kt, AdbPresetTileService.kt, AndroidManifest.xml, build.gradle.kts, developer-context.md
+- Identified root causes: (1) buildPresetFromPackage() appends bare package name without -n flag, creating invalid commands; (2) custom presets saved from Package Manager don't refresh in home tab; (3) stripQuotesAroundToken() removes double quotes that magnet links need; (4) only SmartTube built-in preset
+- Fixed SettingsManager.buildPresetFromPackage(): now generates -n pkg/.MainActivity format by default
+- Added 4 built-in presets: Open Link, Video Player, SmartTube, CloudStream
+- Fixed AdbManager.prepareCommand(): new substituteToken() method detects quoting context — "{URL}" uses doubleQuoteEscape(), '{URL}' or bare {URL} uses shellEscape()
+- Added AdbManager.doubleQuoteEscape() for magnet link / complex URI support
+- Restructured ConnectionTab → HomeTab: connection status + preset chips + quick command with app selector
+- Added inline app selector: scans TV packages, auto-generates command on selection
+- Moved manual connection (IP/port) from home to Settings sheet
+- Removed auto-execute toggle from home tab
+- Removed ADB Bridge start/stop from settings (use Quick Settings tile)
+- Enhanced AdbForegroundService notification: disconnect action button, connected TV name
+- Added battery optimization first-install prompt (AlertDialog on first launch)
+- Added preset refresh on ON_RESUME lifecycle event (fixes presets not showing from builder)
+- Added AnimatedVisibility with fadeIn/fadeOut for status cards
+- Updated strings.xml with new string resources
+- Updated version to 2.4.0 / code 34
+- Updated developer-context.md version reference
+- Committed as d60a522
+
+Stage Summary:
+- 10 files modified: MainActivity.kt, AdbManager.kt, SettingsManager.kt, AdbForegroundService.kt, strings.xml, build.gradle.kts, developer-context.md, build.yml, + mode changes
+- Version: v2.4.0 / code 34
+- Push pending: needs GitHub auth (SSH key or PAT)
