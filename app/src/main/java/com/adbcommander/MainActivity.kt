@@ -20,9 +20,11 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -45,6 +47,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -98,9 +101,9 @@ fun MainScreen() {
     }
 
     // Terminal tab scroll detection
-    LaunchedEffect(terminalListState.firstVisibleScrollOffset) {
+    LaunchedEffect(terminalListState.firstVisibleItemIndex, terminalListState.firstVisibleItemScrollOffset) {
         if (activeTab != 1) return@LaunchedEffect
-        val offset = terminalListState.firstVisibleScrollOffset
+        val offset = terminalListState.firstVisibleItemIndex * 1000 + terminalListState.firstVisibleItemScrollOffset
         val delta = offset - terminalPrevScroll
         if (delta > 10) isBarVisible = false
         else if (delta < -10) isBarVisible = true
@@ -928,7 +931,7 @@ fun TerminalTab(
     // Auto-scroll to the newest line whenever output grows
     LaunchedEffect(lines.size) {
         if (lines.isNotEmpty()) {
-            listState.animateScrollToItem(lines.size - 1)
+            listState.scrollToItem(lines.size - 1)
         }
     }
 
@@ -1488,12 +1491,14 @@ fun SettingsSheet(onClose: () -> Unit) {
                     Button(
                         onClick = {
                             if (serviceRunning) {
-                                val stopIntent = Intent(context, AdbForegroundService::class.java).apply { action = AdbForegroundService.ACTION_STOP }
-                                context.startService(stopIntent)
+                                context.stopService(Intent(context, AdbForegroundService::class.java))
                                 serviceRunning = false
                             } else {
-                                val startIntent = Intent(context, AdbForegroundService::class.java).apply { action = AdbForegroundService.ACTION_START }
-                                context.startService(startIntent)
+                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                    context.startForegroundService(Intent(context, AdbForegroundService::class.java))
+                                } else {
+                                    context.startService(Intent(context, AdbForegroundService::class.java))
+                                }
                                 serviceRunning = true
                             }
                             batteryChecked++
@@ -1948,10 +1953,10 @@ fun LogEntryRow(log: CommandLogStore.LogEntry, onTap: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
-            if (log.success) Icons.Filled.CheckCircle else Icons.Filled.Error,
+            if (log.isSuccess) Icons.Filled.CheckCircle else Icons.Filled.Error,
             contentDescription = null,
             modifier = Modifier.size(16.dp),
-            tint = if (log.success) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+            tint = if (log.isSuccess) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
         )
         Spacer(Modifier.width(8.dp))
         Column(modifier = Modifier.weight(1f)) {
@@ -1962,7 +1967,7 @@ fun LogEntryRow(log: CommandLogStore.LogEntry, onTap: () -> Unit) {
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                log.timestamp,
+                CommandLogStore.formatTimestamp(log.timestamp),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
