@@ -48,11 +48,6 @@ object AdbManager {
         return manager
     }
 
-    /**
-     * Strip any "adb shell " or "adb " prefix that users commonly paste.
-     * libadb-android's shell stream is already a shell — sending "adb shell"
-     * inside it would be a recursive no-op error.
-     */
     fun sanitizeCommand(raw: String): String {
         var clean = raw.trim()
         val adbShellPattern = Regex("""^adb\s+shell\s+""", RegexOption.IGNORE_CASE)
@@ -65,15 +60,6 @@ object AdbManager {
     /**
      * Escape a string for safe insertion into a Linux shell command.
      * Wraps the value in single quotes and escapes any embedded single quotes.
-     * This prevents &, ?, =, ;, |, and other shell metacharacters from
-     * fragmenting the command.
-     *
-     * Example: https://site.com/file.apk?id=1&type=mp4
-     *   → 'https://site.com/file.apk?id=1&type=mp4'
-     *
-     * IMPORTANT: Preset templates must use bare {URL} / {FILE} placeholders
-     * with NO surrounding quotes. shellEscape() adds the quotes at runtime.
-     * Double-quoting ('{URL}' + shellEscape) produces ''url'' which is wrong.
      */
     fun shellEscape(value: String): String {
         val escaped = value.replace("'", "'\\''")
@@ -81,17 +67,26 @@ object AdbManager {
     }
 
     /**
+     * Escape a string for safe insertion inside double quotes in a shell command.
+     * Escapes backslash, double quote, dollar sign, and backtick — the four
+     * characters that retain special meaning inside double-quoted strings.
+     *
+     * This is the preferred escaping for URLs in `am start -d` commands because
+     * double-quoted strings work reliably with all Android TV `am` implementations,
+     * including magnet links that contain `&`, `=`, and other URI metacharacters.
+     */
+    fun doubleQuoteEscape(value: String): String {
+        val escaped = value
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("$", "\\$")
+            .replace("`", "\\`")
+        return "\"$escaped\""
+    }
+
+    /**
      * Strip any surrounding single or double quotes around a placeholder token
-     * in the template string. This prevents double-quoting when shellEscape()
-     * later wraps the substituted value in single quotes.
-     *
-     * Example: am start -d '{URL}' → am start -d {URL}
-     *          am start -d "{URL}" → am start -d {URL}
-     *
-     * Uses plain String.replace() instead of Regex because tokens contain
-     * curly braces ({URL}, {MIME}, {FILE}) which are regex quantifier
-     * metacharacters and would throw PatternSyntaxException if passed
-     * to Regex unescaped.
+     * in the template string.
      */
     private fun stripQuotesAroundToken(template: String, token: String): String {
         return template
@@ -100,61 +95,74 @@ object AdbManager {
     }
 
     /**
-     * Replace URL placeholders in a command template with the actual shared URL,
-     * safely shell-escaped so metacharacters like &, ?, = don't fragment the command.
-     * Supports both {URL} and the literal YOUR_VIDEO_URL as placeholders.
+     * Substitute a token in the template, respecting the quoting context.
      *
-     * IMPORTANT: Any surrounding quotes around {URL} or {MIME} in the template
-     * are stripped BEFORE substitution to prevent double-quoting artifacts
-     * like ''url'' being sent to the TV.
+     * - If the template has `"{TOKEN}"`, the token is replaced with a
+     *   double-quote-escaped value (via [doubleQuoteEscape]).
+     * - If the template has `'{TOKEN}'`, the token is replaced with a
+     *   single-quote-escaped value (via [shellEscape]).
+     * - If the token is bare (no surrounding quotes), it's replaced with a
+     *   single-quote-escaped value (backwards-compatible default).
+     *
+     * This design lets preset templates use `"{URL}"` for maximum compatibility
+     * with magnet links and complex URIs, while still supporting bare `{URL}`
+     * for simple cases where single-quote escaping suffices.
      */
-    // AI AGENT NOTE: The substitution order is load-bearing — strip quotes
-    // BEFORE escaping, never the other way around. Swapping the order would
-    // double-escape user-entered quotes and break URLs that legitimately
-    // contain single quotes. See developer-context.md §3 "Token stripping
-    // and escaping order".
+    private fun substituteToken(template: String, token: String, value: String): String {
+        // Double-quoted context: "{TOKEN}" → doubleQuoteEscape(value)
+        if (template.contains("\"$token\"")) {
+            return template.replace("\"$token\"", doubleQuoteEscape(value))
+        }
+        // Single-quoted context: '{TOKEN}' → shellEscape(value)
+        if (template.contains("'$token'")) {
+            return template.replace("'$token'", shellEscape(value))
+        }
+        // Bare token → single-quote escape (default, safest)
+        return template.replace(token, shellEscape(value))
+    }
+
+    /**
+     * Replace URL placeholders in a command template with the actual shared URL.
+     *
+     * v2.4.0: Now respects quoting context in the template:
+     * - `"{URL}"` → URL is double-quote-escaped (best for magnet links, complex URIs)
+     * - `'{URL}'` or bare `{URL}` → URL is single-quote-escaped (default)
+     *
+     * The same logic applies to `{MIME}` and `{FILE}` tokens.
+     */
+    // AI AGENT NOTE: The substitution order is load-bearing — we substitute
+    // each token in place, respecting its surrounding quote context, rather
+    // than stripping all quotes first and escaping later. This preserves the
+    // user's intended quoting style per token. See developer-context.md §3.
     fun prepareCommand(template: String, sharedUrl: String, mimeType: String): String {
-        val escapedUrl = shellEscape(sharedUrl)
-        val escapedMime = shellEscape(mimeType)
-        // Strip any quotes around placeholders in the template first
-        var cleanTemplate = stripQuotesAroundToken(template, "{URL}")
-        cleanTemplate = stripQuotesAroundToken(cleanTemplate, "{MIME}")
-        cleanTemplate = stripQuotesAroundToken(cleanTemplate, "{FILE}")
-        var cmd = cleanTemplate
-            .replace("{URL}", escapedUrl)
-            .replace("{MIME}", escapedMime)
-            .replace("YOUR_VIDEO_URL", escapedUrl)
+        var cmd = substituteToken(template, "{URL}", sharedUrl)
+        cmd = substituteToken(cmd, "{MIME}", mimeType)
+        cmd = substituteToken(cmd, "{FILE}", "")
+        // Legacy: support old YOUR_VIDEO_URL placeholder with single-quote escape
+        cmd = cmd.replace("YOUR_VIDEO_URL", shellEscape(sharedUrl))
         return sanitizeCommand(cmd)
     }
 
     /**
      * Replace file placeholder {FILE} with the remote file path on the TV,
-     * and {URL} with the HTTP streaming URL. Both are properly shell-escaped.
+     * and {URL} with the HTTP streaming URL. Both are properly escaped.
      *
-     * IMPORTANT: Any surrounding quotes around placeholders in the template
-     * are stripped BEFORE substitution to prevent double-quoting artifacts.
+     * v2.4.0: Respects quoting context (same as prepareCommand).
      */
     fun prepareFileCommand(template: String, remoteFilePath: String, httpUrl: String, mimeType: String): String {
-        // Strip any quotes around placeholders in the template first
-        var cleanTemplate = stripQuotesAroundToken(template, "{URL}")
-        cleanTemplate = stripQuotesAroundToken(cleanTemplate, "{MIME}")
-        cleanTemplate = stripQuotesAroundToken(cleanTemplate, "{FILE}")
-        val escapedMime = shellEscape(mimeType)
-        var cmd = cleanTemplate
-            .replace("{MIME}", escapedMime)
+        var cmd = substituteToken(template, "{MIME}", mimeType)
         if (remoteFilePath.isNotBlank()) {
-            cmd = cmd.replace("{FILE}", shellEscape("file://$remoteFilePath"))
+            cmd = substituteToken(cmd, "{FILE}", "file://$remoteFilePath")
         }
         if (httpUrl.isNotBlank()) {
-            cmd = cmd.replace("{URL}", shellEscape(httpUrl))
-                .replace("YOUR_VIDEO_URL", shellEscape(httpUrl))
+            cmd = substituteToken(cmd, "{URL}", httpUrl)
+            cmd = cmd.replace("YOUR_VIDEO_URL", shellEscape(httpUrl))
         }
         return sanitizeCommand(cmd)
     }
 
     /**
      * Connect to TV and execute a shell command.
-     * The command is sanitized before sending to remove any "adb shell" prefix.
      */
     suspend fun executeShell(context: Context, host: String, port: Int, rawCommand: String): Result<String> =
         withContext(Dispatchers.IO) {
@@ -181,13 +189,8 @@ object AdbManager {
                 val buffer = ByteArray(4096)
 
                 var totalRead = 0
-                // AI AGENT NOTE: This 10-second read deadline is the ONLY thing
-                // preventing executeShell from hanging forever if the TV accepts
-                // the connection but never responds (which happens when the TV
-                // is mid-reboot, in standby, or running a long-running command
-                // like `pm install`). Do NOT raise this above 15 seconds — the
-                // share-sheet UX requires the dialog to either succeed or fail
-                // fast so the user can retry. See developer-context.md §2.2.
+                // AI AGENT NOTE: This 10-second read deadline prevents
+                // executeShell from hanging forever. Do NOT raise above 15s.
                 val deadline = System.currentTimeMillis() + 10000
 
                 while (System.currentTimeMillis() < deadline) {
@@ -223,9 +226,6 @@ object AdbManager {
 
     /**
      * Push a local file to the TV via ADB shell using base64 encoding.
-     * Suitable for small files (under ~2MB). For larger files, use HTTP streaming.
-     *
-     * @return the remote file path on the TV
      */
     suspend fun pushFileSmall(
         context: Context,
@@ -249,15 +249,13 @@ object AdbManager {
 
             val remotePath = "$REMOTE_FILE_DIR/$fileName"
 
-            // Truncate/create the remote file first
             val initResult = executeShell(context, host, port, "echo -n '' > $remotePath")
             if (initResult.isFailure) {
                 return@withContext Result.failure(IOException("Failed to create remote file: ${initResult.exceptionOrNull()?.message}"))
             }
 
-            // Send file content in base64 chunks
             val base64 = Base64.encodeToString(fileBytes, Base64.NO_WRAP)
-            val chunkSize = 3000 // safe for shell command length
+            val chunkSize = 3000
             var offset = 0
             var chunkNum = 0
 
@@ -275,7 +273,6 @@ object AdbManager {
                 chunkNum++
             }
 
-            // Verify file was written
             val verifyResult = executeShell(context, host, port, "ls -la $remotePath")
             Log.d(TAG, "File push verification: ${verifyResult.getOrDefault("unknown")}")
 
@@ -287,33 +284,22 @@ object AdbManager {
     }
 
     /**
-     * Extract a URL/URI from shared text. Universal — supports any scheme:
-     * http, https, ftp, content, file, market, .apk download links, magnet, etc.
-     * Falls back to the full raw shared text if no URI pattern matches,
-     * so nothing the phone sends ever gets silently dropped.
+     * Extract a URL/URI from shared text. Universal — supports any scheme.
      */
     fun extractUrl(sharedText: String): String? {
         if (sharedText.isBlank()) return null
 
-        // Universal URI: any_scheme://anything (no whitespace)
         val universalRegex = Regex("""[a-zA-Z][a-zA-Z0-9+.-]*://[^\s<>"{}|\\^`\[\]]+""")
         val universalMatch = universalRegex.find(sharedText)
         if (universalMatch != null) return universalMatch.value
 
-        // Magnet URIs (magnet:? — no // after colon)
         val magnetRegex = Regex("""magnet:\?[^\s<>"{}|\\^`\[\]]+""", RegexOption.IGNORE_CASE)
         val magnetMatch = magnetRegex.find(sharedText)
         if (magnetMatch != null) return magnetMatch.value
 
-        // No URI pattern found — return the full raw text the phone sent
         return sharedText.trim().ifBlank { null }
     }
 
-    /**
-     * Get the file extension from a MIME type.
-     * Falls back to the generic subtype (e.g. "jpeg" from "image/jpeg")
-     * instead of "tmp", so HTTP streaming URLs carry a recognisable extension.
-     */
     fun getExtensionFromMimeType(mimeType: String?): String {
         if (mimeType.isNullOrBlank()) return "bin"
         return when {
@@ -337,17 +323,12 @@ object AdbManager {
             mimeType.contains("video") -> "mp4"
             mimeType.contains("image") -> "jpg"
             else -> {
-                // Fallback: use the subtype part of "type/subtype" (e.g. "jpeg")
                 val subtype = mimeType.substringAfter("/", "").substringBefore(";")
                 if (subtype.isNotBlank() && subtype != "*") subtype else "bin"
             }
         }
     }
 
-    /**
-     * Extract the file extension from a filename (e.g. "photo.jpg" → "jpg").
-     * Returns null if the filename has no extension.
-     */
     fun getExtensionFromFileName(fileName: String?): String? {
         if (fileName.isNullOrBlank()) return null
         val lastDot = fileName.lastIndexOf('.')
@@ -356,16 +337,9 @@ object AdbManager {
         return if (ext.all { it.isLetterOrDigit() }) ext else null
     }
 
-    /**
-     * Derive a MIME type from a file extension.
-     * Used to resolve the true content type when the share intent
-     * provides a generic MIME (like application/octet-stream) but
-     * the filename reveals the actual format.
-     */
     fun getMimeTypeFromExtension(extension: String?): String? {
         if (extension.isNullOrBlank()) return null
         return when (extension.lowercase()) {
-            // Video
             "mp4" -> "video/mp4"
             "mkv" -> "video/x-matroska"
             "avi" -> "video/x-msvideo"
@@ -373,14 +347,12 @@ object AdbManager {
             "m4v" -> "video/mp4"
             "3gp" -> "video/3gpp"
             "ts" -> "video/mp2t"
-            // Audio
             "mp3" -> "audio/mpeg"
             "wav" -> "audio/wav"
             "ogg" -> "audio/ogg"
             "flac" -> "audio/flac"
             "aac" -> "audio/aac"
             "m4a" -> "audio/mp4"
-            // Image
             "jpg", "jpeg" -> "image/jpeg"
             "png" -> "image/png"
             "gif" -> "image/gif"
@@ -388,7 +360,6 @@ object AdbManager {
             "bmp" -> "image/bmp"
             "svg" -> "image/svg+xml"
             "heic", "heif" -> "image/heic"
-            // Document
             "pdf" -> "application/pdf"
             "html", "htm" -> "text/html"
             "txt" -> "text/plain"
@@ -398,14 +369,7 @@ object AdbManager {
         }
     }
 
-    /**
-     * Resolve the most accurate MIME type from available information.
-     * Priority: provided MIME type (if specific) > filename-derived > fallback.
-     * Filters out generic MIME types (application/octet-stream, wildcard) that
-     * carry no useful type information.
-     */
     fun resolveMimeType(intentMimeType: String?, fileName: String?): String {
-        // If the intent provided a specific, non-generic MIME type, trust it
         if (!intentMimeType.isNullOrBlank()
             && intentMimeType != "*/*"
             && intentMimeType != "application/octet-stream"
@@ -413,13 +377,11 @@ object AdbManager {
         ) {
             return intentMimeType
         }
-        // Try deriving from the file extension
         val ext = getExtensionFromFileName(fileName)
         if (ext != null) {
             val fromExt = getMimeTypeFromExtension(ext)
             if (fromExt != null) return fromExt
         }
-        // Last resort: generic wildcard
         return "*/*"
     }
 

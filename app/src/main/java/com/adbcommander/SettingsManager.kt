@@ -27,49 +27,24 @@ class SettingsManager(private val context: Context) {
         val KEY_SELECTED_PRESET = stringPreferencesKey("selected_preset")
         val KEY_CONTENT_TYPE = stringPreferencesKey("content_type")
         val KEY_SELECTED_TV_NAME = stringPreferencesKey("selected_tv_name")
+        val KEY_FIRST_INSTALL = booleanPreferencesKey("first_install_prompted")
 
         const val DEFAULT_TV_HOST = ""
         const val DEFAULT_TV_PORT = 5555
-        // v2.2.0: Default command is now package-agnostic (no Cx Player component).
-        // Lets the TV's own intent resolver pick the handler for the MIME type.
-        const val DEFAULT_COMMAND = """am start -a android.intent.action.VIEW -d {URL} -t {MIME}"""
+        const val DEFAULT_COMMAND = """am start -a android.intent.action.VIEW -d "{URL}" -t "{MIME}""""
         const val DEFAULT_AUTO_EXECUTE = false
         const val CONTENT_TYPE_URL = "url"
         const val CONTENT_TYPE_FILE = "file"
 
-        // v2.2.0: The default preset name (used when none is persisted).
-        const val DEFAULT_PRESET_NAME = "SmartTube"
+        const val DEFAULT_PRESET_NAME = "Open Link"
 
         // ── Preset constants ─────────────────────────────────────────
         private const val PRESETS_PREFS_NAME = "adb_commander_presets"
         private const val KEY_PRESETS_JSON = "presets_json"
 
-        // v2.2.1: Process-wide SharedPreferences reference for the preset
-        // query layer. Initialized once from the APPLICATION context via
-        // [preload] (called from App.onCreate) so every entry point —
-        // MainActivity, ShareReceiverActivity cold-started from the share
-        // sheet, AdbPresetTileService, AdbTileService — sees the same
-        // globally-bound instance with no per-Activity lazy initialization.
-        //
-        // AI AGENT NOTE: This companion-level binding is the fix for the
-        // v2.2.0 regression where custom saved presets did not surface to
-        // ShareReceiverActivity when it was launched directly from the
-        // share sheet without MainActivity having been opened first. The
-        // per-instance `by lazy { context.getSharedPreferences(...) }` pattern
-        // created a new lazy holder for every `SettingsManager(context)`
-        // construction; while Android caches SharedPreferences at the
-        // framework level, the lazy + apply() (async writes) combination
-        // meant background intent processors could read stale/empty preset
-        // lists. See developer-context.md §2.2 (background IO threading).
         @Volatile
         private var globalPresetsPrefs: SharedPreferences? = null
 
-        /**
-         * Bind the global preset SharedPreferences from the application
-         * context. Safe to call multiple times — subsequent calls are no-ops.
-         * Called from [App.onCreate] so the binding exists before any
-         * Activity or Service touches the preset layer.
-         */
         fun preload(context: Context) {
             if (globalPresetsPrefs == null) {
                 synchronized(Companion) {
@@ -81,12 +56,6 @@ class SettingsManager(private val context: Context) {
             }
         }
 
-        /**
-         * Returns the process-wide preset SharedPreferences, initializing
-         * it on-demand from the application context if [preload] has not
-         * yet been called (defensive fallback for entry points that fire
-         * before App.onCreate completes).
-         */
         private fun presetsPrefs(context: Context): SharedPreferences {
             return globalPresetsPrefs ?: synchronized(Companion) {
                 globalPresetsPrefs ?: context.applicationContext
@@ -95,22 +64,35 @@ class SettingsManager(private val context: Context) {
             }
         }
 
-        // Built-in presets — bare {URL}/{MIME}/{FILE} placeholders, NO surrounding quotes.
-        // shellEscape() in AdbManager adds single quotes at runtime.
-        // stripQuotesAroundToken() strips any accidental quotes before escaping.
-        //
-        // v2.2.0: Purged "Universal Default" (Cx Player / com.cxinventor.file.explorer),
-        // "Send to TV Downloads", and "APK Installer" per cleanup pass.
+        // v2.4.0: Expanded built-in presets covering major use cases.
+        // Templates use double-quoted tokens like "{URL}" for maximum
+        // compatibility — double quotes in am start -d work reliably for
+        // magnet links, HTTP URLs with query params, and all URI schemes.
+        // AdbManager.prepareCommand detects the quoting context and escapes
+        // accordingly (double-quote escaping for "{URL}", single-quote
+        // escaping for bare {URL}).
         val BUILT_IN_PRESETS = listOf(
-            Preset("SmartTube", """am start -a android.intent.action.VIEW -d {URL} -n org.smarttube.stable/com.liskovsoft.smartyoutubetv2.tv.ui.main.SplashActivity""")
+            Preset(
+                "Open Link",
+                """am start -a android.intent.action.VIEW -d "{URL}""""
+            ),
+            Preset(
+                "Video Player",
+                """am start -a android.intent.action.VIEW -d "{URL}" -t "{MIME}""""
+            ),
+            Preset(
+                "SmartTube",
+                """am start -a android.intent.action.VIEW -d "{URL}" -n org.smarttube.stable/com.liskovsoft.smartyoutubetv2.tv.ui.main.SplashActivity"""
+            ),
+            Preset(
+                "CloudStream",
+                """am start -a android.intent.action.VIEW -d "{URL}" -t "{MIME}" -n com.lagradost.cloudstream3.prerelease/.MainActivity"""
+            )
         )
     }
 
     data class Preset(val name: String, val command: String) {
-        /** Does this preset use the {FILE} placeholder (for local file sharing)? */
         val usesFile: Boolean get() = command.contains("{FILE}")
-
-        /** Does this preset use the {URL} placeholder (for URL sharing)? */
         val usesUrl: Boolean get() = command.contains("{URL}")
     }
 
@@ -123,6 +105,7 @@ class SettingsManager(private val context: Context) {
     val selectedPreset = context.dataStore.data.map { it[KEY_SELECTED_PRESET] ?: DEFAULT_PRESET_NAME }
     val contentType = context.dataStore.data.map { it[KEY_CONTENT_TYPE] ?: CONTENT_TYPE_URL }
     val selectedTvName = context.dataStore.data.map { it[KEY_SELECTED_TV_NAME] ?: "" }
+    val firstInstallPrompted = context.dataStore.data.map { it[KEY_FIRST_INSTALL] ?: false }
 
     suspend fun getTvHost(): String = tvHost.first()
     suspend fun getTvPort(): Int = tvPort.first()
@@ -131,6 +114,7 @@ class SettingsManager(private val context: Context) {
     suspend fun getSelectedPreset(): String = selectedPreset.first()
     suspend fun getContentType(): String = contentType.first()
     suspend fun getSelectedTvName(): String = selectedTvName.first()
+    suspend fun isFirstInstallPrompted(): Boolean = firstInstallPrompted.first()
 
     suspend fun setTvHost(host: String) { context.dataStore.edit { it[KEY_TV_HOST] = host } }
     suspend fun setTvPort(port: Int) { context.dataStore.edit { it[KEY_TV_PORT] = port } }
@@ -139,28 +123,16 @@ class SettingsManager(private val context: Context) {
     suspend fun setSelectedPreset(name: String) { context.dataStore.edit { it[KEY_SELECTED_PRESET] = name } }
     suspend fun setContentType(type: String) { context.dataStore.edit { it[KEY_CONTENT_TYPE] = type } }
     suspend fun setSelectedTvName(name: String) { context.dataStore.edit { it[KEY_SELECTED_TV_NAME] = name } }
+    suspend fun setFirstInstallPrompted(prompted: Boolean) { context.dataStore.edit { it[KEY_FIRST_INSTALL] = prompted } }
 
 
     // ── Preset management via SharedPreferences ──────────────────────
-    //
-    // v2.2.1: All preset reads/writes now route through the companion-level
-    // [presetsPrefs(context)] helper which binds to a single process-wide
-    // SharedPreferences instance. This guarantees that ShareReceiverActivity
-    // (cold-started from the share sheet) sees the same custom presets that
-    // MainActivity saved — no per-instance lazy holders, no stale reads.
 
-    /**
-     * Returns all presets: built-in first, then user-created custom presets.
-     */
     fun getAllPresets(): List<Preset> {
         val customPresets = loadCustomPresets()
         return BUILT_IN_PRESETS + customPresets
     }
 
-    /**
-     * Save a new custom preset. The name must not collide with built-in presets.
-     * Returns true if saved successfully, false if name already exists.
-     */
     fun saveCustomPreset(name: String, command: String): Boolean {
         if (name.isBlank()) return false
         if (BUILT_IN_PRESETS.any { it.name.equals(name, ignoreCase = true) }) return false
@@ -177,9 +149,6 @@ class SettingsManager(private val context: Context) {
         return true
     }
 
-    /**
-     * Delete a custom preset by name. Cannot delete built-in presets.
-     */
     fun deleteCustomPreset(name: String): Boolean {
         val presets = loadCustomPresets().toMutableList()
         val removed = presets.removeAll { it.name == name }
@@ -187,10 +156,6 @@ class SettingsManager(private val context: Context) {
         return removed
     }
 
-    /**
-     * Get the command template for a given preset name.
-     * Returns null if preset not found.
-     */
     fun getPresetCommand(presetName: String): String? {
         BUILT_IN_PRESETS.find { it.name == presetName }?.let { return it.command }
         return loadCustomPresets().find { it.name == presetName }?.command
@@ -198,24 +163,35 @@ class SettingsManager(private val context: Context) {
 
     /**
      * Build an `am start` command from package exploration data.
-     * Bare {URL}/{FILE} placeholders — NO surrounding quotes.
-     * shellEscape() in AdbManager adds single quotes at runtime.
+     *
+     * v2.4.0 FIX: When only the package name is known (no specific activity),
+     * uses -n pkg/.MainActivity as the default component target — this is the
+     * standard Android shorthand for "launch the default main activity of this
+     * package". Previously appended the package as a bare argument which
+     * produced invalid `am start` commands.
+     *
+     * Templates use double-quoted tokens ("{URL}", "{MIME}") for maximum
+     * compatibility with magnet links and URLs containing special characters.
      */
     fun buildPresetFromPackage(
         presetName: String,
         packageName: String,
         action: String = "android.intent.action.VIEW",
-        dataUri: String = "{URL}",
-        type: String = "",
+        dataUri: String = """{URL}""",
+        type: String = """{MIME}""",
         component: String = ""
     ): String {
         val sb = StringBuilder()
         sb.append("am start")
         if (action.isNotBlank()) sb.append(" -a $action")
-        if (dataUri.isNotBlank()) sb.append(" -d $dataUri")
-        if (type.isNotBlank()) sb.append(" -t $type")
-        if (component.isNotBlank()) sb.append(" -n $component")
-        else if (packageName.isNotBlank()) sb.append(" $packageName")
+        if (dataUri.isNotBlank()) sb.append(" -d \"$dataUri\"")
+        if (type.isNotBlank()) sb.append(" -t \"$type\"")
+        if (component.isNotBlank()) {
+            sb.append(" -n $component")
+        } else if (packageName.isNotBlank()) {
+            // Default to launching the package's main activity
+            sb.append(" -n $packageName/.MainActivity")
+        }
         return sb.toString()
     }
 
@@ -240,20 +216,9 @@ class SettingsManager(private val context: Context) {
             obj.put("command", p.command)
             arr.put(obj)
         }
-        // v2.2.1: commit() instead of apply() so that the very next read
-        // from a background intent processor (ShareReceiverActivity,
-        // AdbPresetTileService) is guaranteed to see the new preset list.
-        // apply() is async and was the root cause of the v2.2.0 regression
-        // where freshly-saved presets didn't surface to the share sheet.
-        // commit() blocks briefly but is bounded (<10ms for a JSON string
-        // this small) and runs on a background coroutine scope anyway.
         presetsPrefs(context).edit().putString(KEY_PRESETS_JSON, arr.toString()).commit()
     }
 
-    /**
-     * Serialize all custom presets to a JSON string for export/backup.
-     * Format: {"presets": [{"name": "...", "command": "..."}]}
-     */
     fun exportPresetsJson(): String {
         val presets = loadCustomPresets()
         val arr = JSONArray()
@@ -268,11 +233,6 @@ class SettingsManager(private val context: Context) {
         return root.toString(2)
     }
 
-    /**
-     * Parse a JSON string and import presets. Returns the count of presets imported.
-     * Format: {"presets": [{"name": "...", "command": "..."}]}
-     * Skips presets that conflict with built-in names.
-     */
     fun importPresetsJson(json: String): Int {
         return try {
             val root = JSONObject(json)

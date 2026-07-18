@@ -4,7 +4,7 @@
 > Any AI agent or human contributor starting a new session on this project
 > MUST read this file end-to-end before proposing changes. The constraints
 > documented here are non-negotiable unless explicitly revisited by the
-> project owner. Last updated: **v2.3.0**.
+> project owner. Last updated: **v2.4.0**.
 
 ---
 

@@ -2,7 +2,7 @@ name: Build Debug APK
 
 on:
   push:
-    branches: [ main, master, feat/bottom-nav-terminal-declutter ]
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:

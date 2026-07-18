@@ -5,8 +5,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
@@ -16,19 +18,10 @@ import androidx.core.app.NotificationCompat
 /**
  * Persistent foreground service representing the active ADB TV bridge.
  *
- * Design goals (Step 8, v2.0.0):
- *  - Keep the app process alive in the background so subsequent ADB
- *    connections and share-sheet executions launch with zero cold-start lag.
- *  - Survive app swipe-away from the Recents menu — see [onTaskRemoved].
- *  - Display a clean, low-priority ongoing notification that represents
- *    the active TV bridge so the user always knows the bridge is up.
- *  - Use the `connectedDevice` foreground service type because this
- *    service represents an active connection to an external device
- *    (the TV over ADB), as Android 14+ requires for that type.
- *
- * The service does NOT itself maintain a long-lived ADB socket — those
- * are still created on demand by [AdbManager.executeShell]. The service's
- * job is process persistence and visible state, not protocol work.
+ * v2.4.0: Enhanced notification with:
+ *  - Disconnect action button (expanded notification)
+ *  - Connected TV name + host info
+ *  - Current locked preset name
  */
 class AdbForegroundService : Service() {
 
@@ -36,17 +29,13 @@ class AdbForegroundService : Service() {
         private const val TAG = "AdbForegroundService"
         const val CHANNEL_ID = "adb_commander_bridge"
         const val NOTIFICATION_ID = 4242
+        const val ACTION_DISCONNECT = "com.adbcommander.ACTION_DISCONNECT"
 
         @Volatile
         private var running: Boolean = false
 
-        /** True when the foreground service is currently active. */
         fun isRunning(): Boolean = running
 
-        /**
-         * Start the persistent bridge service. Safe to call from the UI
-         * thread — Android handles the actual start asynchronously.
-         */
         fun start(context: Context) {
             val intent = Intent(context, AdbForegroundService::class.java)
             try {
@@ -60,9 +49,6 @@ class AdbForegroundService : Service() {
             }
         }
 
-        /**
-         * Stop the persistent bridge service.
-         */
         fun stop(context: Context) {
             try {
                 context.stopService(Intent(context, AdbForegroundService::class.java))
@@ -72,28 +58,38 @@ class AdbForegroundService : Service() {
         }
     }
 
+    private val disconnectReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == ACTION_DISCONNECT) {
+                Log.d(TAG, "Disconnect requested from notification")
+                // Stop the service
+                stopSelf()
+            }
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         running = true
         createNotificationChannel()
+
+        // Register receiver for disconnect action
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(disconnectReceiver, IntentFilter(ACTION_DISCONNECT), Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(disconnectReceiver, IntentFilter(ACTION_DISCONNECT))
+        }
+
         startForegroundCompat()
         Log.d(TAG, "ADB TV bridge service started")
     }
 
-    /**
-     * Return START_STICKY so the system restarts the service if it has
-     * to reclaim memory. The restarted service gets a null intent —
-     * [onCreate] handles notification setup, so no intent handling needed.
-     */
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Update notification with current TV info
+        updateNotification()
         return START_STICKY
     }
 
-    /**
-     * App was swiped away from the Recents menu. We must NOT terminate.
-     * Re-deliver ourselves so the bridge survives — some OEMs aggressively
-     * kill the service process on swipe-away despite START_STICKY.
-     */
     override fun onTaskRemoved(rootIntent: Intent?) {
         val restart = Intent(applicationContext, AdbForegroundService::class.java)
         try {
@@ -112,6 +108,7 @@ class AdbForegroundService : Service() {
 
     override fun onDestroy() {
         running = false
+        try { unregisterReceiver(disconnectReceiver) } catch (_: Exception) {}
         Log.d(TAG, "ADB TV bridge service stopped")
         super.onDestroy()
     }
@@ -133,10 +130,6 @@ class AdbForegroundService : Service() {
         }
     }
 
-    /**
-     * Start in foreground using the connectedDevice service type on
-     * Android 14+, or the legacy path on older versions.
-     */
     private fun startForegroundCompat() {
         val notif = buildNotification()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -150,6 +143,12 @@ class AdbForegroundService : Service() {
         }
     }
 
+    private fun updateNotification() {
+        val notif = buildNotification()
+        val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+        nm.notify(NOTIFICATION_ID, notif)
+    }
+
     private fun buildNotification(): Notification {
         val launchIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -159,15 +158,49 @@ class AdbForegroundService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
+        // Disconnect action
+        val disconnectIntent = Intent(ACTION_DISCONNECT)
+        val disconnectPi = PendingIntent.getBroadcast(
+            this, 1, disconnectIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        // Read current TV name for notification text
+        val settings = SettingsManager(this)
+        var tvName = ""
+        var tvHost = ""
+        try {
+            // Use runBlocking since this runs on a service thread, not UI
+            tvName = kotlinx.coroutines.runBlocking { settings.getSelectedTvName() }
+            tvHost = kotlinx.coroutines.runBlocking { settings.getTvHost() }
+        } catch (_: Exception) {}
+
+        val displayText = if (tvHost.isNotBlank()) {
+            val name = tvName.ifBlank { tvHost }
+            getString(R.string.notification_text_connected, name)
+        } else {
+            getString(R.string.notification_text)
+        }
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.app_name))
-            .setContentText(getString(R.string.notification_text))
+            .setContentText(displayText)
             .setSmallIcon(R.drawable.ic_notification)
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setContentIntent(contentPi)
+            .addAction(
+                R.drawable.ic_notification,
+                getString(R.string.notification_action_disconnect),
+                disconnectPi
+            )
+            .setStyle(
+                NotificationCompat.BigTextStyle()
+                    .bigText(displayText)
+                    .setSummaryText(getString(R.string.notification_summary))
+            )
             .build()
     }
 }

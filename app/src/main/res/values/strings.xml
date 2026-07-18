@@ -1,11 +1,11 @@
 <resources>
     <string name="app_name">ADB Commander</string>
 
-    <!-- Dual share-sheet targets (v2.2.0; v2.2.1 shortened labels) -->
+    <!-- Dual share-sheet targets -->
     <string name="share_label_manual">ADB Manual</string>
     <string name="share_label_auto">ADB Auto</string>
 
-    <!-- Preset Quick Settings tile (v2.2.1) -->
+    <!-- Preset Quick Settings tile -->
     <string name="tile_preset_label">ADB Preset</string>
     <string name="tile_preset_subtitle_none">No preset locked</string>
     <string name="preset_picker_title">Lock auto-execute preset</string>
@@ -15,12 +15,15 @@
     <string name="notification_channel_name">ADB TV Bridge</string>
     <string name="notification_channel_desc">Persistent background bridge to your Android TV</string>
     <string name="notification_text">ADB bridge to TV is active</string>
+    <string name="notification_text_connected">Connected to %s</string>
+    <string name="notification_action_disconnect">Disconnect</string>
+    <string name="notification_summary">ADB Bridge Active</string>
 
     <!-- Quick Settings tile -->
     <string name="tile_label_active">ADB Bridge: On</string>
     <string name="tile_label_inactive">ADB Bridge: Off</string>
 
-    <!-- TV Discovery (v2.1.0) -->
+    <!-- TV Discovery -->
     <string name="tv_scan_scanning">Scanning for TVs…</string>
     <string name="tv_scan_found">%d TV(s) found</string>
     <string name="tv_scan_none">No TVs found yet</string>
@@ -31,6 +34,20 @@
     <string name="tv_status_cached">Cached</string>
     <string name="tv_forget">Forget Device</string>
     <string name="tv_test_connection">Test Connection</string>
-    <string name="tv_advanced">Advanced Manual Entry</string>
-    <string name="tv_advanced_hint">For power users — enter an IP and port manually if auto-discovery misses your TV.</string>
+    <string name="tv_advanced">Manual Connection</string>
+    <string name="tv_advanced_hint">Enter TV IP and port if auto-discovery misses your TV.</string>
+
+    <!-- Home tab -->
+    <string name="home_presets_section">Presets</string>
+    <string name="home_quick_command">Quick Command</string>
+    <string name="home_select_app">Select App</string>
+    <string name="home_scan_apps">Scan TV Apps</string>
+    <string name="home_save_preset">Save as Preset</string>
+    <string name="home_no_apps">Scan your TV for apps first</string>
+
+    <!-- Battery prompt -->
+    <string name="battery_prompt_title">Grant Battery Immunity</string>
+    <string name="battery_prompt_message">ADB Commander needs battery optimization exemption to keep the bridge alive in the background. Without it, Android may kill the service while you\'re using it.</string>
+    <string name="battery_prompt_grant">Grant Immunity</string>
+    <string name="battery_prompt_skip">Skip</string>
 </resources>
