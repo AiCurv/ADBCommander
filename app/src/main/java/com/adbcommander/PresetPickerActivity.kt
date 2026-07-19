@@ -117,17 +117,11 @@ fun PresetPickerOverlay(
 
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
-            // AI AGENT NOTE: This is the loadCustomPresets() path that v2.2.1
-            // fixed — it now routes through the companion-level
-            // presetsPrefs(context) helper which binds to a single
-            // process-wide SharedPreferences instance. The cold-start from
-            // the QS tile will see the same presets that MainActivity saved.
+            // Show ALL presets (built-in + custom) so the user can select
+            // any preset as their auto-execute profile from Quick Settings.
+            // Built-in presets like "Open Link" and "Video Player" are the
+            // most commonly used — hiding them made the picker useless.
             customPresets = settings.getAllPresets()
-                .filter { preset ->
-                    // Exclude built-ins — this picker shows only user-saved
-                    // presets, per the user instruction.
-                    SettingsManager.BUILT_IN_PRESETS.none { it.name == preset.name }
-                }
             selectedPresetName = settings.getSelectedPreset()
         }
         isLoading = false

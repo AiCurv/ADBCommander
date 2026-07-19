@@ -61,6 +61,64 @@ class SettingsManager(private val context: Context) {
             }
         }
 
+        // ── v2.7.0: Synchronous warm cache for startup speed ──────────
+        // DataStore's first read can take 50-200ms (file open + parse).
+        // We warm these values into a volatile cache from App.onCreate()
+        // so HomeTab can render instantly on first frame.
+        @Volatile
+        private var cachedTvHost: String? = null
+        @Volatile
+        private var cachedTvPort: Int? = null
+        @Volatile
+        private var cachedTvName: String? = null
+        @Volatile
+        private var cacheWarmed = false
+
+        /**
+         * Warm the connection-settings cache by reading DataStore once
+         * from App.onCreate(). This is called on the main thread during
+         * Application startup, but DataStore preferencesDataStore delegate
+         * creates the file lazily — the first .data.map.first() call
+         * triggers the file open, and subsequent reads are near-instant.
+         *
+         * Must be called from App.onCreate only.
+         */
+        fun warmCache(context: Context) {
+            if (cacheWarmed) return
+            synchronized(Companion) {
+                if (cacheWarmed) return
+                val appContext = context.applicationContext
+                // Trigger DataStore file creation by accessing the delegate.
+                // We use a simple kotlinx.coroutines.runBlocking to read
+                // the three most latency-sensitive values synchronously.
+                // This is safe in Application.onCreate (no ANR risk —
+                // the Activity hasn't started yet).
+                try {
+                    val ds = appContext.dataStore
+                    // Access the DataStore to trigger file init
+                    kotlinx.coroutines.runBlocking {
+                        val prefs = ds.data.first()
+                        cachedTvHost = prefs[KEY_TV_HOST] ?: DEFAULT_TV_HOST
+                        cachedTvPort = prefs[KEY_TV_PORT] ?: DEFAULT_TV_PORT
+                        cachedTvName = prefs[KEY_SELECTED_TV_NAME] ?: ""
+                    }
+                } catch (e: Exception) {
+                    // Non-fatal — the UI will fall back to the async path
+                    cachedTvHost = null
+                    cachedTvPort = null
+                    cachedTvName = null
+                }
+                cacheWarmed = true
+            }
+        }
+
+        /** Read cached TV host instantly (null if cache not warmed) */
+        fun getCachedTvHost(): String? = cachedTvHost
+        /** Read cached TV port instantly (null if cache not warmed) */
+        fun getCachedTvPort(): Int? = cachedTvPort
+        /** Read cached TV name instantly (null if cache not warmed) */
+        fun getCachedTvName(): String? = cachedTvName
+
         private fun presetsPrefs(context: Context): SharedPreferences {
             return globalPresetsPrefs ?: synchronized(Companion) {
                 globalPresetsPrefs ?: context.applicationContext

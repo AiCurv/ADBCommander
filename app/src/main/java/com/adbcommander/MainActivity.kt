@@ -1,5 +1,8 @@
 package com.adbcommander
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -12,13 +15,18 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -33,15 +41,21 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.window.Dialog
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import com.adbcommander.ui.theme.ADBCommanderTheme
@@ -65,7 +79,6 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            // Read theme mode from settings
             val context = LocalContext.current
             val settingsManager = remember { SettingsManager(context) }
             var themeMode by remember { mutableStateOf(SettingsManager.THEME_SYSTEM) }
@@ -73,12 +86,8 @@ class MainActivity : ComponentActivity() {
             LaunchedEffect(Unit) {
                 themeMode = settingsManager.getThemeMode()
             }
-
-            // Keep listening for theme changes
             LaunchedEffect(Unit) {
-                settingsManager.themeMode.collect { mode ->
-                    themeMode = mode
-                }
+                settingsManager.themeMode.collect { mode -> themeMode = mode }
             }
 
             val darkTheme = when (themeMode) {
@@ -97,7 +106,7 @@ class MainActivity : ComponentActivity() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  MAIN SCREEN — Bottom navigation (always visible, no hide-on-scroll)
+//  MAIN SCREEN — Bottom navigation
 // ═══════════════════════════════════════════════════════════════════════
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -156,14 +165,22 @@ fun MainScreen() {
             }
         }
     ) { innerPadding ->
+        // Keep both tabs composed to preserve state across switches.
+        // Switching tabs only toggles visibility — no recomposition,
+        // no re-connection, no re-scanning.
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(top = innerPadding.calculateTopPadding())
         ) {
-            when (activeTab) {
-                0 -> HomeTab(bottomPadding = innerPadding.calculateBottomPadding())
-                1 -> TerminalTab(bottomPadding = innerPadding.calculateBottomPadding())
+            // Home tab always exists, just hidden when inactive
+            HomeTab(
+                bottomPadding = innerPadding.calculateBottomPadding(),
+                isVisible = activeTab == 0
+            )
+            // Terminal tab always exists, just hidden when inactive
+            if (activeTab == 1) {
+                TerminalTab(bottomPadding = innerPadding.calculateBottomPadding())
             }
         }
     }
@@ -174,26 +191,26 @@ fun MainScreen() {
             sheetState = sheetState,
             dragHandle = { BottomSheetDefaults.DragHandle() }
         ) {
-            SettingsSheet(
-                onClose = { showSettingsSheet = false }
-            )
+            SettingsSheet(onClose = { showSettingsSheet = false })
         }
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  HOME TAB — Connection + Remote + App Selector + Presets by App
+//  HOME TAB — Connection Status + TV Apps Grid + Quick Command
 // ═══════════════════════════════════════════════════════════════════════
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun HomeTab(
-    bottomPadding: Dp = 0.dp
+    bottomPadding: Dp = 0.dp,
+    isVisible: Boolean = true
 ) {
     val context = LocalContext.current
     val settings = remember { SettingsManager(context) }
     val scope = rememberCoroutineScope()
 
+    // ── Connection state ─────────────────────────────────────────────
     var tvHost by remember { mutableStateOf("") }
     var tvPort by remember { mutableIntStateOf(SettingsManager.DEFAULT_TV_PORT) }
     var tvName by remember { mutableStateOf("") }
@@ -201,37 +218,50 @@ fun HomeTab(
     var connectionStatus by remember { mutableStateOf<String?>(null) }
     var isTesting by remember { mutableStateOf(false) }
 
-    // Discovery state
+    // ── Discovery state ──────────────────────────────────────────────
     val discovery = remember { TvDiscoveryService(context) }
     var discoveredTvs by remember { mutableStateOf<List<TvDiscoveryService.DiscoveredTv>>(emptyList()) }
     var isScanning by remember { mutableStateOf(false) }
     var expandedRowHost by remember { mutableStateOf<String?>(null) }
 
-    // App selector state
+    // ── App grid state ───────────────────────────────────────────────
     var tvApps by remember { mutableStateOf<List<String>>(emptyList()) }
     var isScanningApps by remember { mutableStateOf(false) }
-    var selectedApp by remember { mutableStateOf("") }
-    var showAppDetail by remember { mutableStateOf(false) }
+    var showAppPopup by remember { mutableStateOf(false) }
+    var popupApp by remember { mutableStateOf("") }
+    var appsExpanded by remember { mutableStateOf(false) }
 
-    // Presets state
-    var allPresets by remember { mutableStateOf(SettingsManager.BUILT_IN_PRESETS) }
-    var presetRefreshKey by remember { mutableIntStateOf(0) }
+    // ── Quick command state ──────────────────────────────────────────
+    var quickCommand by remember { mutableStateOf("") }
+    var commandOutput by remember { mutableStateOf<String?>(null) }
+    var isRunningCommand by remember { mutableStateOf(false) }
+    var commandSucceeded by remember { mutableStateOf(false) }
 
-    // Save preset dialog
+    // ── Preset dialogs ───────────────────────────────────────────────
     var showSaveDialog by remember { mutableStateOf(false) }
     var newPresetName by remember { mutableStateOf("") }
     var newPresetCommand by remember { mutableStateOf("") }
-
-    // Delete preset dialog
+    var newPresetApp by remember { mutableStateOf("") }
     var showDeleteDialog by remember { mutableStateOf(false) }
     var presetToDelete by remember { mutableStateOf<String?>(null) }
 
-    // Expandable sections
+    // ── Remote expand ────────────────────────────────────────────────
     var remoteExpanded by remember { mutableStateOf(false) }
-    var appsExpanded by remember { mutableStateOf(false) }
-    var presetsExpanded by remember { mutableStateOf(false) }
 
-    // Load settings and verify connection
+    // ── Presets ──────────────────────────────────────────────────────
+    var allPresets by remember { mutableStateOf(SettingsManager.BUILT_IN_PRESETS) }
+    var presetRefreshKey by remember { mutableIntStateOf(0) }
+
+    // ── Settings loaded flag — prevents scan before DataStore values are read ──
+    var isSettingsLoaded by remember { mutableStateOf(false) }
+
+    // ═══ Load settings instantly from warm cache, then verify connection ═══
+    // Phase 1: Synchronous cache read (instant, no DataStore file I/O)
+    SettingsManager.getCachedTvHost()?.let { tvHost = it }
+    SettingsManager.getCachedTvPort()?.let { tvPort = it }
+    SettingsManager.getCachedTvName()?.let { tvName = it }
+
+    // ═══ Load settings + verify connection (deferred) ════════════════
     LaunchedEffect(Unit) {
         val h = settings.getTvHost()
         val p = settings.getTvPort()
@@ -239,28 +269,27 @@ fun HomeTab(
         tvHost = h
         tvPort = p
         tvName = n
+        isSettingsLoaded = true
+
         if (h.isNotBlank()) {
-            val result = AdbManager.testConnection(context, h, p)
-            connectionVerified = result.isSuccess
-            if (!result.isSuccess) {
-                connectionStatus = "Connection lost: ${result.exceptionOrNull()?.message}"
-            }
-            // Auto-start bridge service
-            if (result.isSuccess && !AdbForegroundService.isRunning()) {
-                AdbForegroundService.start(context)
+            // If bridge is already running, trust it — skip the slow test
+            if (AdbForegroundService.isRunning()) {
+                connectionVerified = true
+            } else {
+                val result = AdbManager.testConnection(context, h, p)
+                connectionVerified = result.isSuccess
+                if (result.isSuccess) {
+                    AdbForegroundService.start(context)
+                }
             }
         }
     }
 
-    // Refresh presets
-    LaunchedEffect(presetRefreshKey) {
-        allPresets = withContext(Dispatchers.IO) { settings.getAllPresets() }
-    }
-
+    // Refresh presets on resume
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
-        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
                 presetRefreshKey++
             }
         }
@@ -268,7 +297,11 @@ fun HomeTab(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    // Discovery scan
+    LaunchedEffect(presetRefreshKey) {
+        allPresets = withContext(Dispatchers.IO) { settings.getAllPresets() }
+    }
+
+    // ═══ Discovery scan — ONLY if no TV configured ═══════════════════
     var scanJob by remember { mutableStateOf<Job?>(null) }
 
     val startScan: () -> Unit = {
@@ -276,36 +309,242 @@ fun HomeTab(
         isScanning = true
         scanJob = lifecycleOwner.lifecycleScope.launch {
             try {
-                discovery.discover().collect { tvs ->
-                    discoveredTvs = tvs
-                }
+                discovery.discover().collect { tvs -> discoveredTvs = tvs }
             } finally {
                 isScanning = false
             }
         }
     }
 
-    DisposableEffect(lifecycleOwner) {
-        startScan()
+    // Only auto-scan if no TV is configured AND settings are loaded.
+    // Without the isSettingsLoaded guard, tvHost is "" on first frame
+    // (before DataStore read completes), causing an unnecessary scan.
+    DisposableEffect(lifecycleOwner, isSettingsLoaded) {
+        if (isSettingsLoaded && tvHost.isBlank() && !AdbForegroundService.isRunning()) {
+            startScan()
+        }
         onDispose {
             scanJob?.cancel()
             isScanning = false
         }
     }
 
-    // ── Save Preset Dialog ───────────────────────────────────────────
+    // ═══ Helper: select a discovered TV ═══════════════════════════════
+    val selectTv: (TvDiscoveryService.DiscoveredTv) -> Unit = { tv ->
+        scope.launch {
+            settings.setTvHost(tv.host)
+            settings.setTvPort(tv.port)
+            if (tv.name.isNotBlank()) {
+                settings.setSelectedTvName(tv.name)
+            }
+            tvHost = tv.host
+            tvPort = tv.port
+            tvName = tv.name
+
+            // Verify connection to the selected TV
+            val result = AdbManager.testConnection(context, tv.host, tv.port)
+            connectionVerified = result.isSuccess
+            if (result.isSuccess) {
+                if (!AdbForegroundService.isRunning()) {
+                    AdbForegroundService.start(context)
+                }
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  DIALOGS
+    // ═══════════════════════════════════════════════════════════════════
+
+    // ── App Popup Dialog ─────────────────────────────────────────────
+    if (showAppPopup && popupApp.isNotBlank()) {
+        val appPresets = allPresets.filter { it.appPackage == popupApp }
+        var presetCmd by remember(popupApp) { mutableStateOf(settings.buildPresetFromPackage("", popupApp)) }
+        var presetName by remember { mutableStateOf("") }
+
+        Dialog(onDismissRequest = { showAppPopup = false }) {
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                tonalElevation = 6.dp,
+                color = MaterialTheme.colorScheme.surface
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    // Header
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Filled.Android, contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
+                        Spacer(Modifier.width(10.dp))
+                        Text(popupApp, style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f),
+                            maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    }
+
+                    // Package name with copy button
+                    OutlinedCard(
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.4f))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Package:", style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer)
+                            Spacer(Modifier.width(8.dp))
+                            Text(popupApp, style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            IconButton(
+                                onClick = {
+                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    clipboard.setPrimaryClip(ClipData.newPlainText("package", popupApp))
+                                    Toast.makeText(context, "Package name copied!", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Icon(Icons.Filled.ContentCopy, contentDescription = "Copy",
+                                    modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+                    }
+
+                    HorizontalDivider()
+
+                    // Create Preset section
+                    Text("Create Preset", style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary)
+
+                    OutlinedTextField(
+                        value = presetName,
+                        onValueChange = { presetName = it },
+                        label = { Text("Preset name") },
+                        placeholder = { Text("My Preset") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp)
+                    )
+
+                    OutlinedTextField(
+                        value = presetCmd,
+                        onValueChange = { presetCmd = it },
+                        label = { Text("Shell command") },
+                        placeholder = { Text("""am start -a android.intent.action.VIEW -d "{URL}" -n pkg/.Activity""") },
+                        minLines = 3, maxLines = 6,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        textStyle = TextStyle(fontFamily = FontFamily.Monospace)
+                    )
+
+                    Text(
+                        "Use {URL} and {MIME} as placeholders — replaced when sharing via ShareSheet.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // Launch button
+                        OutlinedButton(
+                            onClick = {
+                                scope.launch {
+                                    val cmd = "monkey -p $popupApp -c android.intent.category.LAUNCHER 1"
+                                    val result = AdbManager.executeShell(context, tvHost, tvPort, cmd)
+                                    Toast.makeText(context,
+                                        if (result.isSuccess) "Launched!" else "Failed: ${result.exceptionOrNull()?.message}",
+                                        Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Launch", style = MaterialTheme.typography.labelMedium)
+                        }
+
+                        // Save preset button
+                        Button(
+                            onClick = {
+                                if (presetName.isNotBlank() && presetCmd.isNotBlank()) {
+                                    val saved = settings.saveCustomPreset(presetName.trim(), presetCmd, popupApp)
+                                    if (saved) {
+                                        presetRefreshKey++
+                                        Toast.makeText(context, "Preset saved!", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        Toast.makeText(context, "Name conflicts with built-in preset", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.weight(1f),
+                            enabled = presetName.isNotBlank() && presetCmd.isNotBlank()
+                        ) {
+                            Icon(Icons.Filled.Save, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Save", style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+
+                    // Existing presets for this app
+                    if (appPresets.isNotEmpty()) {
+                        HorizontalDivider()
+                        Text("Saved presets", style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        appPresets.forEach { preset ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Filled.PlaylistPlay, contentDescription = null,
+                                    modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Spacer(Modifier.width(6.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(preset.name, style = MaterialTheme.typography.bodySmall)
+                                    Text(preset.command.take(60) + if (preset.command.length > 60) "..." else "",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                                IconButton(
+                                    onClick = { presetToDelete = preset.name; showDeleteDialog = true },
+                                    modifier = Modifier.size(20.dp)
+                                ) {
+                                    Icon(Icons.Filled.Delete, contentDescription = "Delete",
+                                        modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.error)
+                                }
+                            }
+                        }
+                    }
+
+                    // Close button
+                    TextButton(
+                        onClick = { showAppPopup = false },
+                        modifier = Modifier.align(Alignment.End)
+                    ) { Text("Close") }
+                }
+            }
+        }
+    }
+
+    // ── Save Preset Dialog (from Quick Command) ──────────────────────
     if (showSaveDialog) {
         AlertDialog(
             onDismissRequest = { showSaveDialog = false; newPresetName = ""; newPresetCommand = "" },
-            title = { Text("Create Preset") },
+            title = { Text("Save as Preset") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (selectedApp.isNotBlank()) {
+                    if (newPresetApp.isNotBlank()) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Filled.Apps, contentDescription = null,
                                 tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(6.dp))
-                            Text("For: $selectedApp",
+                            Text("For: $newPresetApp",
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.primary)
                         }
@@ -323,14 +562,14 @@ fun HomeTab(
                         value = newPresetCommand,
                         onValueChange = { newPresetCommand = it },
                         label = { Text("Shell command") },
-                        placeholder = { Text("""am start -a android.intent.action.VIEW -d "{URL}" -n pkg/.Activity""") },
                         minLines = 3, maxLines = 8,
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp),
-                        textStyle = TextStyle(fontFamily = FontFamily.Monospace)
+                        textStyle = TextStyle(fontFamily = FontFamily.Monospace),
+                        readOnly = true
                     )
                     Text(
-                        "Use {URL} and {MIME} as placeholders — they get replaced when sharing via ShareSheet.",
+                        "Use {URL} and {MIME} as placeholders — replaced when sharing via ShareSheet.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -339,7 +578,7 @@ fun HomeTab(
             confirmButton = {
                 TextButton(onClick = {
                     if (newPresetName.isNotBlank() && newPresetCommand.isNotBlank()) {
-                        val saved = settings.saveCustomPreset(newPresetName.trim(), newPresetCommand, selectedApp)
+                        val saved = settings.saveCustomPreset(newPresetName.trim(), newPresetCommand, newPresetApp)
                         if (saved) {
                             presetRefreshKey++
                             Toast.makeText(context, "Preset saved!", Toast.LENGTH_SHORT).show()
@@ -347,15 +586,16 @@ fun HomeTab(
                             Toast.makeText(context, "Name conflicts with built-in preset", Toast.LENGTH_SHORT).show()
                         }
                     }
-                    showSaveDialog = false; newPresetName = ""; newPresetCommand = ""
+                    showSaveDialog = false; newPresetName = ""; newPresetCommand = ""; newPresetApp = ""
                 }) { Text("Save") }
             },
             dismissButton = {
-                TextButton(onClick = { showSaveDialog = false; newPresetName = ""; newPresetCommand = "" }) { Text("Cancel") }
+                TextButton(onClick = { showSaveDialog = false; newPresetName = ""; newPresetCommand = ""; newPresetApp = "" }) { Text("Cancel") }
             }
         )
     }
 
+    // ── Delete Preset Dialog ─────────────────────────────────────────
     if (showDeleteDialog && presetToDelete != null) {
         AlertDialog(
             onDismissRequest = { showDeleteDialog = false; presetToDelete = null },
@@ -375,47 +615,37 @@ fun HomeTab(
         )
     }
 
+    // ═══════════════════════════════════════════════════════════════════
+    //  MAIN CONTENT — visibility toggled without destroying state
+    // ═══════════════════════════════════════════════════════════════════
+
+    if (!isVisible) return
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp + bottomPadding),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+            .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 16.dp + bottomPadding),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        // ═══ Connection Status Card ═══════════════════════════════════
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = when {
-                    connectionVerified == true -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
-                    connectionVerified == false -> Color(0x40FFA000)
-                    tvHost.isNotBlank() -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f)
-                    else -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f)
-                }
-            )
-        ) {
+        // ═══ 1. Connection Status Card ═════════════════════════════════
+        GlassCard {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    when {
-                        connectionVerified == true -> Icons.Filled.CastConnected
-                        tvHost.isNotBlank() -> Icons.Filled.CastConnected
-                        else -> Icons.Filled.Cast
-                    },
-                    contentDescription = null,
-                    tint = when {
-                        connectionVerified == true -> MaterialTheme.colorScheme.primary
+                Surface(
+                    shape = CircleShape,
+                    modifier = Modifier.size(12.dp),
+                    color = when {
+                        connectionVerified == true -> Color(0xFF4CAF50)
                         connectionVerified == false -> Color(0xFFFFA000)
                         tvHost.isNotBlank() -> MaterialTheme.colorScheme.outline
                         else -> MaterialTheme.colorScheme.error
-                    },
-                    modifier = Modifier.size(22.dp)
-                )
+                    }
+                ) {}
                 Spacer(Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
@@ -428,17 +658,17 @@ fun HomeTab(
                         },
                         style = MaterialTheme.typography.titleSmall,
                         color = when {
-                            connectionVerified == true -> MaterialTheme.colorScheme.onPrimaryContainer
+                            connectionVerified == true -> MaterialTheme.colorScheme.onSurface
                             connectionVerified == false -> Color(0xFFE65100)
                             tvHost.isNotBlank() -> MaterialTheme.colorScheme.onSurfaceVariant
-                            else -> MaterialTheme.colorScheme.onErrorContainer
+                            else -> MaterialTheme.colorScheme.error
                         }
                     )
                     if (tvHost.isNotBlank()) {
                         Text(
                             "$tvHost:$tvPort",
                             style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
@@ -467,26 +697,18 @@ fun HomeTab(
                     }
                 }
             }
-        }
 
-        // Connection test result (transient)
-        AnimatedVisibility(
-            visible = connectionStatus != null,
-            enter = expandVertically() + fadeIn(),
-            exit = shrinkVertically() + fadeOut()
-        ) {
-            connectionStatus?.let {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (it.startsWith("Connected"))
-                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
-                        else MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f)
-                    )
-                ) {
+            // Connection test result (transient)
+            AnimatedVisibility(
+                visible = connectionStatus != null,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                connectionStatus?.let {
                     Row(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(it, modifier = Modifier.weight(1f),
@@ -500,15 +722,13 @@ fun HomeTab(
             }
         }
 
-        // ═══ TV Scan (only shows when not connected) ══════════════════
+        // ═══ 2. TV Discovery (only when not connected) ════════════════
         if (connectionVerified != true || isScanning) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-            ) {
+            GlassCard {
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     if (isScanning) {
@@ -528,120 +748,49 @@ fun HomeTab(
                             },
                             style = MaterialTheme.typography.bodyMedium
                         )
-                        if (!isScanning && discoveredTvs.isEmpty()) {
-                            Text(
-                                context.getString(R.string.tv_scan_tap_to_retry),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
                     }
-                    IconButton(onClick = {
-                        discoveredTvs = emptyList()
-                        startScan()
-                    }) {
-                        Icon(Icons.Filled.Refresh, contentDescription = "Rescan")
+                    IconButton(onClick = { startScan() }, enabled = !isScanning) {
+                        Icon(Icons.Filled.Refresh, contentDescription = "Rescan",
+                            tint = MaterialTheme.colorScheme.primary)
                     }
                 }
             }
 
-            // Discovered TV list
-            if (discoveredTvs.isNotEmpty()) {
-                discoveredTvs.forEach { tv ->
-                    DiscoveredTvRow(
-                        tv = tv,
-                        isSelected = tv.host == tvHost && tvHost.isNotBlank(),
-                        isExpanded = expandedRowHost == tv.host,
-                        onTap = {
-                            tvHost = tv.host
-                            tvPort = tv.port
-                            tvName = tv.name
-                            connectionVerified = null
-                            connectionStatus = null
-                            scope.launch {
-                                settings.setTvHost(tv.host)
-                                settings.setTvPort(tv.port)
-                                settings.setSelectedTvName(tv.name)
-                                val result = AdbManager.testConnection(context, tv.host, tv.port)
-                                connectionVerified = result.isSuccess
-                                if (result.isSuccess) {
-                                    connectionStatus = "Connected! ${tv.name} responded: ${result.getOrDefault("")}"
-                                    if (!AdbForegroundService.isRunning()) {
-                                        AdbForegroundService.start(context)
-                                    }
-                                } else {
-                                    connectionStatus = "Connected but ADB failed: ${result.exceptionOrNull()?.message}"
-                                }
-                            }
-                            Toast.makeText(context, "Selected: ${tv.name}", Toast.LENGTH_SHORT).show()
-                        },
-                        onExpandToggle = {
-                            expandedRowHost = if (expandedRowHost == tv.host) null else tv.host
-                        },
-                        onTest = {
-                            isTesting = true; connectionStatus = null
-                            scope.launch {
-                                val result = AdbManager.testConnection(context, tv.host, tv.port)
-                                isTesting = false
-                                connectionVerified = if (tv.host == tvHost) result.isSuccess else connectionVerified
-                                connectionStatus = if (result.isSuccess)
-                                    "Connected! ${tv.name} responded: ${result.getOrDefault("")}"
-                                else
-                                    "Failed: ${result.exceptionOrNull()?.message}"
-                            }
-                        },
-                        onForget = {
-                            discovery.forgetDevice(tv.host)
-                            if (tv.host == tvHost) {
-                                tvHost = ""
-                                tvName = ""
-                                connectionVerified = null
-                                scope.launch {
-                                    settings.setTvHost("")
-                                    settings.setSelectedTvName("")
-                                }
-                                if (AdbForegroundService.isRunning()) {
-                                    AdbForegroundService.stop(context)
-                                }
-                            }
-                            Toast.makeText(context, "Forgot ${tv.name}", Toast.LENGTH_SHORT).show()
+            // Discovered TVs
+            discoveredTvs.forEach { tv ->
+                val isExpanded = expandedRowHost == tv.host
+                val isSelected = tv.host == tvHost
+                DiscoveredTvRow(
+                    tv = tv,
+                    isSelected = isSelected,
+                    isExpanded = isExpanded,
+                    onTap = { selectTv(tv) },
+                    onExpandToggle = { expandedRowHost = if (isExpanded) null else tv.host },
+                    onTest = {
+                        scope.launch {
+                            val result = AdbManager.testConnection(context, tv.host, tv.port)
+                            connectionVerified = result.isSuccess
+                            connectionStatus = if (result.isSuccess) "Connected!" else "Failed"
                         }
-                    )
-                }
-            }
-        } else {
-            // TV is connected — compact rescan row
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(
-                    "${discoveredTvs.size} device(s) found",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    onForget = {
+                        discovery.forgetDevice(tv.host)
+                        discoveredTvs = discoveredTvs.filter { it.host != tv.host }
+                        if (tv.host == tvHost) {
+                            scope.launch {
+                                settings.setTvHost("")
+                                settings.setSelectedTvName("")
+                                tvHost = ""; tvName = ""; connectionVerified = null
+                            }
+                        }
+                    }
                 )
-                TextButton(onClick = {
-                    connectionVerified = null
-                    discoveredTvs = emptyList()
-                    startScan()
-                }) {
-                    Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("Rescan", style = MaterialTheme.typography.labelMedium)
-                }
             }
         }
 
-        // ═══ Quick Remote (expandable) ═══════════════════════════════
+        // ═══ 3. Quick Remote (expandable, only when connected) ════════
         if (connectionVerified == true) {
-            HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
-
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-            ) {
+            GlassCard {
                 Column {
                     Row(
                         modifier = Modifier
@@ -657,8 +806,7 @@ fun HomeTab(
                             color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
                         Icon(
                             if (remoteExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
+                            contentDescription = null, modifier = Modifier.size(18.dp),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
@@ -669,64 +817,33 @@ fun HomeTab(
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             // D-pad
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.Center
-                            ) {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
                                 RemoteButton("↑", "input keyevent KEYCODE_DPAD_UP", tvHost, tvPort, scope, context)
                             }
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.Center
-                            ) {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
                                 RemoteButton("←", "input keyevent KEYCODE_DPAD_LEFT", tvHost, tvPort, scope, context)
                                 Spacer(Modifier.width(8.dp))
                                 RemoteButton("OK", "input keyevent KEYCODE_ENTER", tvHost, tvPort, scope, context)
                                 Spacer(Modifier.width(8.dp))
                                 RemoteButton("→", "input keyevent KEYCODE_DPAD_RIGHT", tvHost, tvPort, scope, context)
                             }
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.Center
-                            ) {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
                                 RemoteButton("↓", "input keyevent KEYCODE_DPAD_DOWN", tvHost, tvPort, scope, context)
                             }
-
                             HorizontalDivider()
-
-                            // Navigation + Volume row
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceEvenly
-                            ) {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                                 RemoteButton("Home", "input keyevent KEYCODE_HOME", tvHost, tvPort, scope, context)
                                 RemoteButton("Back", "input keyevent KEYCODE_BACK", tvHost, tvPort, scope, context)
                                 RemoteButton("Vol+", "input keyevent KEYCODE_VOLUME_UP", tvHost, tvPort, scope, context)
                                 RemoteButton("Vol-", "input keyevent KEYCODE_VOLUME_DOWN", tvHost, tvPort, scope, context)
                             }
-
-                            // Power row
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.Center
-                            ) {
-                                RemoteButton("Power", "input keyevent KEYCODE_POWER", tvHost, tvPort, scope, context)
-                            }
                         }
                     }
                 }
             }
-        }
 
-        // ═══ TV App Selector (expandable) ════════════════════════════
-        if (connectionVerified == true) {
-            HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
-
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-            ) {
+            // ═══ 4. TV Apps Grid (expandable) ══════════════════════════
+            GlassCard {
                 Column {
                     Row(
                         modifier = Modifier
@@ -741,27 +858,21 @@ fun HomeTab(
                         Column(modifier = Modifier.weight(1f)) {
                             Text("TV Apps", style = MaterialTheme.typography.titleSmall,
                                 color = MaterialTheme.colorScheme.primary)
-                            if (selectedApp.isNotBlank()) {
-                                Text(selectedApp,
-                                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (tvApps.isNotEmpty()) {
+                                Text("${tvApps.size} apps", style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
                         Icon(
                             if (appsExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
+                            contentDescription = null, modifier = Modifier.size(18.dp),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
 
                     AnimatedVisibility(visible = appsExpanded, enter = expandVertically(), exit = shrinkVertically()) {
-                        Column(
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            // Scan apps button
+                        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp)) {
+                            // Scan button
                             OutlinedButton(
                                 onClick = {
                                     isScanningApps = true
@@ -769,8 +880,7 @@ fun HomeTab(
                                         val result = AdbManager.executeShell(context, tvHost, tvPort, "pm list packages -3")
                                         isScanningApps = false
                                         if (result.isSuccess) {
-                                            val output = result.getOrDefault("")
-                                            tvApps = output.lines()
+                                            tvApps = result.getOrDefault("").lines()
                                                 .map { it.removePrefix("package:").trim() }
                                                 .filter { it.isNotBlank() }
                                                 .sorted()
@@ -795,207 +905,204 @@ fun HomeTab(
                                 Text(if (isScanningApps) "Scanning..." else if (tvApps.isEmpty()) "Scan TV Apps" else "Rescan TV Apps")
                             }
 
-                            // App list
+                            // App grid
                             if (tvApps.isNotEmpty()) {
-                                LazyColumn(
-                                    modifier = Modifier.heightIn(max = 240.dp),
-                                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                                Spacer(Modifier.height(8.dp))
+                                LazyVerticalGrid(
+                                    columns = GridCells.Fixed(2),
+                                    modifier = Modifier.heightIn(max = 280.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
                                     items(tvApps) { pkg ->
-                                        val isSelected = pkg == selectedApp
+                                        val shortName = pkg.substringAfterLast(".")
                                         Surface(
                                             modifier = Modifier
                                                 .fillMaxWidth()
                                                 .clickable {
-                                                    selectedApp = if (isSelected) "" else pkg
-                                                    showAppDetail = selectedApp.isNotBlank()
+                                                    popupApp = pkg
+                                                    showAppPopup = true
                                                 },
-                                            shape = RoundedCornerShape(8.dp),
-                                            color = if (isSelected)
-                                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
-                                            else Color.Transparent
+                                            shape = RoundedCornerShape(10.dp),
+                                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
                                         ) {
                                             Row(
-                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
                                                 verticalAlignment = Alignment.CenterVertically
                                             ) {
-                                                Icon(
-                                                    if (isSelected) Icons.Filled.CheckCircle else Icons.Filled.Android,
-                                                    contentDescription = null,
+                                                Icon(Icons.Filled.Android, contentDescription = null,
                                                     modifier = Modifier.size(16.dp),
-                                                    tint = if (isSelected) MaterialTheme.colorScheme.primary
-                                                    else MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
-                                                Spacer(Modifier.width(8.dp))
-                                                Text(
-                                                    pkg,
-                                                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                                                    maxLines = 1, overflow = TextOverflow.Ellipsis
-                                                )
+                                                    tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                Spacer(Modifier.width(6.dp))
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(shortName, style = MaterialTheme.typography.labelSmall,
+                                                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                }
+                                                // Copy package name button
+                                                IconButton(
+                                                    onClick = {
+                                                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                                        clipboard.setPrimaryClip(ClipData.newPlainText("package", pkg))
+                                                        Toast.makeText(context, "Copied: $pkg", Toast.LENGTH_SHORT).show()
+                                                    },
+                                                    modifier = Modifier.size(20.dp)
+                                                ) {
+                                                    Icon(Icons.Filled.ContentCopy, contentDescription = "Copy",
+                                                        modifier = Modifier.size(12.dp),
+                                                        tint = MaterialTheme.colorScheme.primary)
+                                                }
                                             }
                                         }
                                     }
                                 }
+
+                                Text(
+                                    "Tap an app to create a preset. Copy package name to use in Quick Command.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                                )
                             }
                         }
                     }
                 }
             }
 
-            // ═══ App Detail (when app selected) ════════════════════════
-            if (selectedApp.isNotBlank() && appsExpanded) {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f)
-                    )
-                ) {
-                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Filled.Android, contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text(selectedApp,
-                                style = MaterialTheme.typography.titleSmall.copy(fontFamily = FontFamily.Monospace),
-                                color = MaterialTheme.colorScheme.primary,
-                                maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f))
-                        }
+            // ═══ 5. Quick Command ══════════════════════════════════════
+            GlassCard {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Filled.Terminal, contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(10.dp))
+                        Text("Quick Command", style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
+                    }
 
-                        // Action buttons
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            // Launch on TV
-                            OutlinedButton(
-                                onClick = {
+                    OutlinedTextField(
+                        value = quickCommand,
+                        onValueChange = {
+                            quickCommand = it
+                            commandOutput = null
+                            commandSucceeded = false
+                        },
+                        label = { Text("Shell command") },
+                        placeholder = { Text("am start -a android.intent.action.VIEW -d \"{URL}\"") },
+                        minLines = 2, maxLines = 6,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        textStyle = TextStyle(fontFamily = FontFamily.Monospace)
+                    )
+
+                    Text(
+                        "Paste package name from grid above. Use {URL} and {MIME} for ShareSheet presets.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                    )
+
+                    // Run + Save buttons
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = {
+                                if (quickCommand.isNotBlank() && tvHost.isNotBlank()) {
+                                    isRunningCommand = true
+                                    commandOutput = null
                                     scope.launch {
-                                        val cmd = "monkey -p $selectedApp -c android.intent.category.LAUNCHER 1"
-                                        val result = AdbManager.executeShell(context, tvHost, tvPort, cmd)
-                                        if (result.isSuccess) {
-                                            Toast.makeText(context, "Launched!", Toast.LENGTH_SHORT).show()
+                                        val result = AdbManager.executeShell(context, tvHost, tvPort, quickCommand)
+                                        isRunningCommand = false
+                                        commandSucceeded = result.isSuccess
+                                        commandOutput = if (result.isSuccess) {
+                                            result.getOrDefault("").ifBlank { "Command executed (no output)" }
                                         } else {
-                                            Toast.makeText(context, "Failed: ${result.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
+                                            "Error: ${result.exceptionOrNull()?.message}"
                                         }
                                     }
-                                },
-                                shape = RoundedCornerShape(10.dp),
-                                modifier = Modifier.weight(1f)
-                            ) {
+                                }
+                            },
+                            enabled = quickCommand.isNotBlank() && !isRunningCommand,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            if (isRunningCommand) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.onPrimary)
+                            } else {
                                 Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(4.dp))
-                                Text("Launch", style = MaterialTheme.typography.labelMedium)
                             }
-
-                            // Create Preset
-                            Button(
-                                onClick = {
-                                    newPresetName = ""
-                                    newPresetCommand = settings.buildPresetFromPackage("", selectedApp)
-                                    showSaveDialog = true
-                                },
-                                shape = RoundedCornerShape(10.dp),
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(4.dp))
-                                Text("Preset", style = MaterialTheme.typography.labelMedium)
-                            }
+                            Spacer(Modifier.width(6.dp))
+                            Text("Run", style = MaterialTheme.typography.labelMedium)
                         }
 
-                        // Presets for this app
-                        val appPresets = allPresets.filter { it.appPackage == selectedApp }
-                        if (appPresets.isNotEmpty()) {
-                            HorizontalDivider()
-                            Text("Presets for this app", style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            appPresets.forEach { preset ->
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(Icons.Filled.PlaylistPlay, contentDescription = null,
-                                        modifier = Modifier.size(14.dp),
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    Spacer(Modifier.width(6.dp))
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(preset.name, style = MaterialTheme.typography.bodySmall)
-                                        Text(preset.command.take(60) + if (preset.command.length > 60) "..." else "",
-                                            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    }
-                                    IconButton(
-                                        onClick = { presetToDelete = preset.name; showDeleteDialog = true },
-                                        modifier = Modifier.size(20.dp)
-                                    ) {
-                                        Icon(Icons.Filled.Delete, contentDescription = "Delete",
-                                            modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.error)
-                                    }
+                        if (commandSucceeded) {
+                            OutlinedButton(
+                                onClick = {
+                                    newPresetName = ""
+                                    newPresetCommand = quickCommand
+                                    newPresetApp = ""
+                                    showSaveDialog = true
+                                },
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Filled.Save, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Save Preset", style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
+                    }
+
+                    // Command output
+                    if (commandOutput != null) {
+                        OutlinedCard(
+                            shape = RoundedCornerShape(10.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (commandSucceeded)
+                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f)
+                                else MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.2f)
+                            )
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.Top
+                            ) {
+                                Text(commandOutput!!, style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                    color = if (commandSucceeded) MaterialTheme.colorScheme.onSurface
+                                    else MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.weight(1f))
+                                IconButton(onClick = { commandOutput = null }, modifier = Modifier.size(18.dp)) {
+                                    Icon(Icons.Filled.Close, contentDescription = "Dismiss", modifier = Modifier.size(12.dp))
                                 }
                             }
                         }
                     }
                 }
             }
-        }
 
-        // ═══ Presets (expandable, grouped by app) ════════════════════
-        HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
-
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-        ) {
-            Column {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { presetsExpanded = !presetsExpanded }
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(Icons.Filled.PlaylistPlay, contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(10.dp))
-                    Text("Presets", style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
-                    Text("${allPresets.size}", style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(Modifier.width(8.dp))
-                    Icon(
-                        if (presetsExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-
-                AnimatedVisibility(visible = presetsExpanded, enter = expandVertically(), exit = shrinkVertically()) {
-                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp)) {
-                        // General presets (built-in + no app)
-                        val generalPresets = allPresets.filter { it.appPackage.isBlank() }
-                        if (generalPresets.isNotEmpty()) {
-                            Text("General", style = MaterialTheme.typography.labelMedium,
+            // ═══ 6. Presets overview (compact) ═════════════════════════
+            if (allPresets.size > SettingsManager.BUILT_IN_PRESETS.size) {
+                GlassCard {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Filled.PlaylistPlay, contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(10.dp))
+                            Text("Custom Presets", style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
+                            Text("${allPresets.size - SettingsManager.BUILT_IN_PRESETS.size}",
+                                style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Spacer(Modifier.height(4.dp))
-                            generalPresets.forEach { preset ->
-                                PresetRow(
-                                    preset = preset,
-                                    isBuiltIn = SettingsManager.BUILT_IN_PRESETS.any { it.name == preset.name },
-                                    onDelete = { presetToDelete = preset.name; showDeleteDialog = true }
-                                )
-                            }
-                            Spacer(Modifier.height(8.dp))
                         }
 
-                        // App-specific presets grouped by app
-                        val appPresets = allPresets.filter { it.appPackage.isNotBlank() }
-                        val grouped = appPresets.groupBy { it.appPackage }
+                        Spacer(Modifier.height(4.dp))
+
+                        val customPresets = allPresets.filter { preset ->
+                            SettingsManager.BUILT_IN_PRESETS.none { it.name == preset.name }
+                        }
+                        val grouped = customPresets.groupBy { it.appPackage }
                         grouped.forEach { (pkg, presets) ->
-                            Text(pkg, style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace),
-                                color = MaterialTheme.colorScheme.primary)
-                            Spacer(Modifier.height(4.dp))
+                            if (pkg.isNotBlank()) {
+                                Text(pkg, style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                                    color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 4.dp))
+                            }
                             presets.forEach { preset ->
                                 PresetRow(
                                     preset = preset,
@@ -1003,31 +1110,13 @@ fun HomeTab(
                                     onDelete = { presetToDelete = preset.name; showDeleteDialog = true }
                                 )
                             }
-                            Spacer(Modifier.height(8.dp))
-                        }
-
-                        // Create general preset button
-                        OutlinedButton(
-                            onClick = {
-                                selectedApp = ""
-                                newPresetName = ""
-                                newPresetCommand = ""
-                                showSaveDialog = true
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("Create General Preset")
                         }
 
                         Spacer(Modifier.height(4.dp))
-
                         Text(
-                            "Select presets via Quick Settings tile. Presets are used when sharing content through Android ShareSheet.",
+                            "Select presets via Quick Settings tile for ShareSheet auto-execute.",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                         )
                     }
                 }
@@ -1036,66 +1125,23 @@ fun HomeTab(
     }
 }
 
-@Composable
-private fun RemoteButton(
-    label: String,
-    command: String,
-    tvHost: String,
-    tvPort: Int,
-    scope: kotlinx.coroutines.CoroutineScope,
-    context: android.content.Context
-) {
-    FilledTonalButton(
-        onClick = {
-            scope.launch {
-                AdbManager.executeShell(context, tvHost, tvPort, command)
-            }
-        },
-        shape = RoundedCornerShape(10.dp),
-        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-        modifier = Modifier.height(36.dp)
-    ) {
-        Text(label, style = MaterialTheme.typography.labelMedium)
-    }
-}
+// ═══════════════════════════════════════════════════════════════════════
+//  GLASS CARD — Blur/frosted-glass style card
+// ═══════════════════════════════════════════════════════════════════════
 
 @Composable
-private fun PresetRow(
-    preset: SettingsManager.Preset,
-    isBuiltIn: Boolean,
-    onDelete: () -> Unit
+fun GlassCard(
+    content: @Composable () -> Unit
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f)
+        ),
+        elevation = CardDefaults.cardElevation(1.dp)
     ) {
-        Icon(
-            when {
-                preset.name == "Open Link" -> Icons.Filled.OpenInNew
-                preset.name == "Video Player" -> Icons.Filled.PlayCircle
-                preset.usesFile -> Icons.Filled.FolderOpen
-                else -> Icons.Filled.Terminal
-            },
-            contentDescription = null,
-            modifier = Modifier.size(14.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.width(6.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(preset.name, style = MaterialTheme.typography.bodySmall)
-            Text(preset.command.take(60) + if (preset.command.length > 60) "..." else "",
-                style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-        if (!isBuiltIn) {
-            IconButton(onClick = onDelete, modifier = Modifier.size(20.dp)) {
-                Icon(Icons.Filled.Delete, contentDescription = "Delete",
-                    modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.error)
-            }
-        }
+        content()
     }
 }
 
@@ -1322,22 +1368,17 @@ fun SettingsSheet(onClose: () -> Unit) {
     val settings = remember { SettingsManager(context) }
     val scope = rememberCoroutineScope()
 
-    // Manual Connection state
     var tvHost by remember { mutableStateOf("") }
     var tvPort by remember { mutableIntStateOf(SettingsManager.DEFAULT_TV_PORT) }
     var tvName by remember { mutableStateOf("") }
     var isTesting by remember { mutableStateOf(false) }
     var connectionStatus by remember { mutableStateOf<String?>(null) }
 
-    // Expandable states
     var connectionExpanded by remember { mutableStateOf(false) }
     var appearanceExpanded by remember { mutableStateOf(false) }
     var aboutExpanded by remember { mutableStateOf(false) }
-
-    // Theme mode
     var currentTheme by remember { mutableStateOf(SettingsManager.THEME_SYSTEM) }
 
-    // Import presets dialog
     var showImportDialog by remember { mutableStateOf(false) }
     var importJson by remember { mutableStateOf("") }
 
@@ -1348,7 +1389,6 @@ fun SettingsSheet(onClose: () -> Unit) {
         currentTheme = settings.getThemeMode()
     }
 
-    // Listen for theme changes
     LaunchedEffect(Unit) {
         settings.themeMode.collect { mode -> currentTheme = mode }
     }
@@ -1396,32 +1436,22 @@ fun SettingsSheet(onClose: () -> Unit) {
             .padding(top = 4.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        // ── Sheet header ─────────────────────────────────────────────
+        // Header
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(
-                Icons.Filled.Settings,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(24.dp)
-            )
+            Icon(Icons.Filled.Settings, contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
             Spacer(Modifier.width(10.dp))
-            Text(
-                "Settings",
-                style = MaterialTheme.typography.headlineSmall,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.weight(1f)
-            )
+            Text("Settings", style = MaterialTheme.typography.headlineSmall,
+                color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
             IconButton(onClick = onClose) {
                 Icon(Icons.Filled.Close, contentDescription = "Close settings")
             }
         }
 
-        // ═══════════════════════════════════════════════════════════════
-        //  MANUAL CONNECTION (expandable, collapsed by default)
-        // ═══════════════════════════════════════════════════════════════
+        // ── Manual Connection (expandable) ──────────────────────────
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(16.dp),
@@ -1439,21 +1469,14 @@ fun SettingsSheet(onClose: () -> Unit) {
                         tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
                     Spacer(Modifier.width(10.dp))
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            context.getString(R.string.tv_advanced),
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Text(
-                            context.getString(R.string.tv_advanced_hint),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        Text(context.getString(R.string.tv_advanced),
+                            style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                        Text(context.getString(R.string.tv_advanced_hint),
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Icon(
                         if (connectionExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
+                        contentDescription = null, modifier = Modifier.size(18.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
@@ -1493,7 +1516,6 @@ fun SettingsSheet(onClose: () -> Unit) {
                             shape = RoundedCornerShape(12.dp)
                         )
                         Spacer(Modifier.height(8.dp))
-
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(
                                 onClick = {
@@ -1518,7 +1540,6 @@ fun SettingsSheet(onClose: () -> Unit) {
                                 Text(if (isTesting) "Testing..." else "Test Connection")
                             }
                         }
-
                         connectionStatus?.let { status ->
                             Spacer(Modifier.height(8.dp))
                             Card(
@@ -1548,9 +1569,7 @@ fun SettingsSheet(onClose: () -> Unit) {
             }
         }
 
-        // ═══════════════════════════════════════════════════════════════
-        //  APPEARANCE (expandable)
-        // ═══════════════════════════════════════════════════════════════
+        // ── Appearance (expandable) ──────────────────────────────────
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(16.dp),
@@ -1571,8 +1590,7 @@ fun SettingsSheet(onClose: () -> Unit) {
                         color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
                     Icon(
                         if (appearanceExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
+                        contentDescription = null, modifier = Modifier.size(18.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
@@ -1582,34 +1600,23 @@ fun SettingsSheet(onClose: () -> Unit) {
                         Text("Theme", style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.height(6.dp))
-
-                        // Theme options
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             ThemeOptionButton(
-                                label = "System",
-                                icon = Icons.Filled.BrightnessAuto,
+                                label = "System", icon = Icons.Filled.BrightnessAuto,
                                 isSelected = currentTheme == SettingsManager.THEME_SYSTEM,
-                                onClick = {
-                                    scope.launch { settings.setThemeMode(SettingsManager.THEME_SYSTEM) }
-                                },
+                                onClick = { scope.launch { settings.setThemeMode(SettingsManager.THEME_SYSTEM) } },
                                 modifier = Modifier.weight(1f)
                             )
                             ThemeOptionButton(
-                                label = "Light",
-                                icon = Icons.Filled.LightMode,
+                                label = "Light", icon = Icons.Filled.LightMode,
                                 isSelected = currentTheme == SettingsManager.THEME_LIGHT,
-                                onClick = {
-                                    scope.launch { settings.setThemeMode(SettingsManager.THEME_LIGHT) }
-                                },
+                                onClick = { scope.launch { settings.setThemeMode(SettingsManager.THEME_LIGHT) } },
                                 modifier = Modifier.weight(1f)
                             )
                             ThemeOptionButton(
-                                label = "Dark",
-                                icon = Icons.Filled.DarkMode,
+                                label = "Dark", icon = Icons.Filled.DarkMode,
                                 isSelected = currentTheme == SettingsManager.THEME_DARK,
-                                onClick = {
-                                    scope.launch { settings.setThemeMode(SettingsManager.THEME_DARK) }
-                                },
+                                onClick = { scope.launch { settings.setThemeMode(SettingsManager.THEME_DARK) } },
                                 modifier = Modifier.weight(1f)
                             )
                         }
@@ -1619,9 +1626,7 @@ fun SettingsSheet(onClose: () -> Unit) {
             }
         }
 
-        // ═══════════════════════════════════════════════════════════════
-        //  BACKUP & RESTORE PRESETS
-        // ═══════════════════════════════════════════════════════════════
+        // ── Backup & Restore ─────────────────────────────────────────
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(16.dp),
@@ -1642,8 +1647,8 @@ fun SettingsSheet(onClose: () -> Unit) {
                     OutlinedButton(
                         onClick = {
                             val json = settings.exportPresetsJson()
-                            val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                            clipboard.setPrimaryClip(android.content.ClipData.newPlainText("presets", json))
+                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.setPrimaryClip(ClipData.newPlainText("presets", json))
                             Toast.makeText(context, "Presets JSON copied to clipboard!", Toast.LENGTH_SHORT).show()
                         },
                         shape = RoundedCornerShape(12.dp),
@@ -1666,9 +1671,7 @@ fun SettingsSheet(onClose: () -> Unit) {
             }
         }
 
-        // ═══════════════════════════════════════════════════════════════
-        //  ABOUT (expandable)
-        // ═══════════════════════════════════════════════════════════════
+        // ── About (expandable) ───────────────────────────────────────
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(16.dp),
@@ -1689,8 +1692,7 @@ fun SettingsSheet(onClose: () -> Unit) {
                         color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
                     Icon(
                         if (aboutExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
+                        contentDescription = null, modifier = Modifier.size(18.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
@@ -1705,25 +1707,26 @@ fun SettingsSheet(onClose: () -> Unit) {
                                 color = MaterialTheme.colorScheme.onSurface)
                         }
                         Spacer(Modifier.height(4.dp))
-                        DetailRow("Version", "2.5.0")
-                        DetailRow("Build", "35")
+                        DetailRow("Version", "2.7.0")
+                        DetailRow("Build", "37")
                         Spacer(Modifier.height(8.dp))
 
                         Text("Changelog", style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.primary)
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "v2.5.0 — App Selector, Quick Remote, presets by app, theme settings, auto-start bridge, UI fixes\n\n" +
+                            "v2.7.0 — Tab state preservation, no re-scan on switch, instant startup via warm cache, fixed TV name persistence\n\n" +
+                            "v2.6.0 — Grid UI for TV apps, quick command, copy package name, all presets in QS tile, connection fix, faster startup\n\n" +
+                            "v2.5.0 — App selector, presets by app, theme settings\n\n" +
                             "v2.4.0 — URL token substitution, preset template system\n\n" +
-                            "v2.3.0 — Dual share-sheet targets, preset Quick Settings tile, TV auto-discovery\n\n" +
-                            "v2.2.0 — HTTP file streaming, device name resolution, hard scan timeout\n\n" +
-                            "v2.0.0 — Foreground service, quick settings tile, connection management",
+                            "v2.3.0 — Dual share-sheet targets, preset Quick Settings tile\n\n" +
+                            "v2.2.0 — HTTP file streaming, device name resolution\n\n" +
+                            "v2.0.0 — Foreground service, quick settings tile",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Spacer(Modifier.height(8.dp))
 
-                        // GitHub link
                         OutlinedButton(
                             onClick = {
                                 val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/AiCurv/ADBCommander"))
@@ -1739,6 +1742,73 @@ fun SettingsSheet(onClose: () -> Unit) {
                         Spacer(Modifier.height(12.dp))
                     }
                 }
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SHARED COMPOSABLES
+// ═══════════════════════════════════════════════════════════════════════
+
+@Composable
+fun RemoteButton(
+    label: String,
+    command: String,
+    tvHost: String,
+    tvPort: Int,
+    scope: kotlinx.coroutines.CoroutineScope,
+    context: android.content.Context
+) {
+    FilledTonalButton(
+        onClick = {
+            scope.launch {
+                AdbManager.executeShell(context, tvHost, tvPort, command)
+            }
+        },
+        shape = RoundedCornerShape(10.dp),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+        modifier = Modifier.height(36.dp)
+    ) {
+        Text(label, style = MaterialTheme.typography.labelMedium)
+    }
+}
+
+@Composable
+private fun PresetRow(
+    preset: SettingsManager.Preset,
+    isBuiltIn: Boolean,
+    onDelete: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            when {
+                preset.name == "Open Link" -> Icons.Filled.OpenInNew
+                preset.name == "Video Player" -> Icons.Filled.PlayCircle
+                preset.usesFile -> Icons.Filled.FolderOpen
+                else -> Icons.Filled.Terminal
+            },
+            contentDescription = null,
+            modifier = Modifier.size(14.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.width(6.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(preset.name, style = MaterialTheme.typography.bodySmall)
+            Text(preset.command.take(60) + if (preset.command.length > 60) "..." else "",
+                style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        if (!isBuiltIn) {
+            IconButton(onClick = onDelete, modifier = Modifier.size(20.dp)) {
+                Icon(Icons.Filled.Delete, contentDescription = "Delete",
+                    modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.error)
             }
         }
     }
@@ -1772,10 +1842,6 @@ private fun ThemeOptionButton(
         }
     }
 }
-
-// ═══════════════════════════════════════════════════════════════════════
-//  SHARED COMPOSABLES
-// ═══════════════════════════════════════════════════════════════════════
 
 @Composable
 fun DiscoveredTvRow(
@@ -1861,5 +1927,3 @@ fun DetailRow(label: String, value: String) {
         Text(value, style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace))
     }
 }
-
-

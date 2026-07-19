@@ -26,5 +26,12 @@ class App : Application() {
         // MainActivity saved — no per-Activity lazy init, no stale reads.
         // See developer-context.md §2.2 and SettingsManager.preload().
         SettingsManager.preload(this)
+
+        // v2.7.0: Pre-cache critical connection settings so the UI
+        // can render instantly without waiting for DataStore first-read.
+        // DataStore's first access creates/opens the file on disk, which
+        // can take 50-200ms — this moves that cost into Application.onCreate
+        // so the first Activity launch is faster.
+        SettingsManager.warmCache(this)
     }
 }

@@ -4,7 +4,7 @@
 > Any AI agent or human contributor starting a new session on this project
 > MUST read this file end-to-end before proposing changes. The constraints
 > documented here are non-negotiable unless explicitly revisited by the
-> project owner. Last updated: **v2.4.0**.
+> project owner. Last updated: **v2.7.0**.
 
 ---
 
@@ -308,33 +308,44 @@ Scaffold
 The NavigationBar uses `AnimatedVisibility` with slide animations for
 smooth hide/show on scroll. When switching tabs, the bar is always visible.
 
-### 5.2 ConnectionTab
+### 5.2 HomeTab (v2.7.0)
 
 The primary operational surface. Scrollable `Column` containing, in order:
 
-1. **Active Target Indicator card** — always visible at top. Shows
+1. **Connection Status card** (GlassCard) — always visible at top. Shows
    connected TV name + host:port with a green dot, or "No TV connected"
-   with a red dot and hint to scan. Includes a quick Test button when TV
-   is configured. This is the canonical connection status — it reflects
-   the actual persisted TV host, not just scan state.
-2. **Connection test result** — transient card showing success/failure of
-   the last test, with a dismiss button.
-3. **TV Scan card** (auto-hides when TV is connected) — spinner while
-   scanning, "N TV(s) found" when done, "No TVs found yet" + tap-to-retry
-   hint when empty. Rescan `IconButton`. **Decluttered**: when a TV is
-   already connected and selected, the scan card collapses to a compact
-   "N device(s) found + Rescan" row. Only reappears if scanning or no TV.
-4. **Discovered devices list** — one `DiscoveredTvRow` per device (only
-   shown when scan card is visible). Tap selects; expand shows details.
-5. **Advanced Manual Entry accordion** — collapsible IP/port text fields
-   for power users. Default closed.
-6. **Command Presets dropdown** — `ExposedDropdownMenuBox` listing
-   built-in presets plus any user-saved custom presets.
-7. **Save Current as Preset button**.
-8. **Shell Command text field** — multi-line monospace.
-9. **RUN COMMAND button** — calls `AdbManager.executeShell()` and shows
-   output in a dismissable card.
-10. **Auto-Execute toggle**.
+   with a red dot. Includes a Test button. If the bridge service is already
+   running, the connection is trusted without re-testing (faster startup).
+2. **TV Discovery** (only when not connected) — scan for TVs on the network.
+   Only auto-scans if no TV is configured and bridge is not running.
+3. **Quick Remote** (expandable, only when connected) — D-pad and navigation
+   buttons for basic TV remote control.
+4. **TV Apps Grid** (expandable, only when connected) — scans TV for installed
+   third-party packages via `pm list packages -3`, renders a `LazyVerticalGrid`
+   (2 columns). Each grid item shows the app's short name with a copy button
+   for the full package name. Tapping an app opens a popup Dialog showing:
+   - Package name with copy button (for pasting into Quick Command)
+   - Preset creation fields (name + command template)
+   - Launch and Save buttons
+   - Existing presets for that app (with delete option)
+5. **Quick Command** (only when connected) — text field for shell commands.
+   Run button executes the command. Save Preset button appears after a
+   successful run, allowing the command to be saved as a preset.
+   Package names can be copied from the grid above and pasted here.
+6. **Custom Presets overview** (compact, only if custom presets exist) —
+   shows user-created presets grouped by app package.
+
+**Key v2.7.0 changes**:
+- Discovery scan ONLY runs if no TV is configured. If the bridge is running
+  and a TV host is saved, no scan is triggered on app launch or tab switch.
+- Connection test is skipped if `AdbForegroundService.isRunning()` — the
+  running bridge is trusted, eliminating the 10-second test on cold start.
+- TV name is persisted via `SettingsManager.setSelectedTvName()` when a TV
+  is selected from discovery, and loaded immediately on app launch.
+- All presets (built-in + custom) are shown in the Quick Settings preset
+  picker, not just custom presets.
+- The `GlassCard` composable provides a frosted-glass aesthetic using
+  semi-transparent surface colors.
 
 ### 5.2b TerminalTab (v2.3.0)
 
@@ -356,17 +367,12 @@ A pure ADB shell that runs commands directly on the TV. Contains:
 Opened via the Gear IconButton. Contains a scrollable `Column` with a
 header row (gear icon + "Settings" title + close X button) followed by:
 
-1. **Background Service & Battery card** — start/stop the foreground
-   service, request battery-optimization exemption, see live state.
-2. **Package Manager Template Configurator** — collapsible card. Scans
-   the TV for installed packages via `pm list packages [-3]`, renders a
-   searchable/sortable list with app icons, and lets the user build a
-   preset for any package via a dialog.
-3. **Backup & Restore Presets card** — Export button copies custom
-   presets JSON to clipboard; Import button opens a dialog to paste JSON.
-4. **Execution Logs & History card** — scrollable list of past command
-   executions with success/failure icons. Tap to view full command text
-   and copy to clipboard. Clear-logs icon in the header.
+1. **Manual Connection** (expandable) — IP/port text fields + Test button
+   for manual TV entry. Collapsed by default since discovery handles most cases.
+2. **Appearance** (expandable) — theme mode selector (System/Light/Dark).
+3. **Backup & Restore Presets** — Export copies custom presets JSON to clipboard;
+   Import opens a dialog to paste JSON.
+4. **About** (expandable) — app version, build number, changelog, GitHub link.
 
 ### 5.4 ShareReceiverActivity (Dual Aliases)
 
