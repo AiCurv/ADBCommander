@@ -50,6 +50,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.Lifecycle
@@ -643,8 +644,11 @@ fun HomeTab(
     //  MAIN CONTENT — compact, no expandables, premium feel
     // ═══════════════════════════════════════════════════════════════════
 
-    if (!isVisible) return
-
+    AnimatedVisibility(
+        visible = isVisible,
+        enter = fadeIn(),
+        exit = fadeOut()
+    ) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -1037,6 +1041,7 @@ fun HomeTab(
             }
         }
     }
+    } // AnimatedVisibility
 }
 
 //  GLASS CARD — Blur/frosted-glass style card
