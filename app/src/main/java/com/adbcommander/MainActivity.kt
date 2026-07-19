@@ -359,27 +359,28 @@ fun HomeTab(
 
     // ═══ Helper: scan TV apps ════════════════════════════════════════
     val scanTvApps: () -> Unit = {
-        if (tvHost.isBlank()) return
-        isScanningApps = true
-        scope.launch {
-            val result = AdbManager.executeShell(context, tvHost, tvPort, "pm list packages -3")
-            isScanningApps = false
-            if (result.isSuccess) {
-                val output = result.getOrDefault("")
-                if (output.isNotBlank() && output != "Command executed (no output)") {
-                    tvApps = output.lines()
-                        .map { it.removePrefix("package:").trim() }
-                        .filter { it.isNotBlank() && it.contains(".") }
-                        .sorted()
-                    if (tvApps.isEmpty()) {
-                        Toast.makeText(context, "No third-party apps found", Toast.LENGTH_SHORT).show()
+        if (tvHost.isNotBlank()) {
+            isScanningApps = true
+            scope.launch {
+                val result = AdbManager.executeShell(context, tvHost, tvPort, "pm list packages -3")
+                isScanningApps = false
+                if (result.isSuccess) {
+                    val output = result.getOrDefault("")
+                    if (output.isNotBlank() && output != "Command executed (no output)") {
+                        tvApps = output.lines()
+                            .map { it.removePrefix("package:").trim() }
+                            .filter { it.isNotBlank() && it.contains(".") }
+                            .sorted()
+                        if (tvApps.isEmpty()) {
+                            Toast.makeText(context, "No third-party apps found", Toast.LENGTH_SHORT).show()
+                        }
+                    } else {
+                        Toast.makeText(context, "Empty response — TV may need ADB authorization", Toast.LENGTH_LONG).show()
                     }
                 } else {
-                    Toast.makeText(context, "Empty response — TV may need ADB authorization", Toast.LENGTH_LONG).show()
+                    val err = result.exceptionOrNull()?.message ?: "Unknown error"
+                    Toast.makeText(context, "Scan failed: $err", Toast.LENGTH_LONG).show()
                 }
-            } else {
-                val err = result.exceptionOrNull()?.message ?: "Unknown error"
-                Toast.makeText(context, "Scan failed: $err", Toast.LENGTH_LONG).show()
             }
         }
     }
