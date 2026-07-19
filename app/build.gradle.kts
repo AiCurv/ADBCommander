@@ -12,8 +12,8 @@ android {
         applicationId = "com.adbcommander"
         minSdk = 24
         targetSdk = 35
-        versionCode = 37
-        versionName = "2.7.0"
+        versionCode = 38
+        versionName = "2.7.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

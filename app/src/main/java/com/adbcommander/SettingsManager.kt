@@ -137,6 +137,10 @@ class SettingsManager(private val context: Context) {
             Preset(
                 "Video Player",
                 """am start -a android.intent.action.VIEW -d "{URL}" -t "{MIME}""""
+            ),
+            Preset(
+                "SmartTube",
+                """am start -a android.intent.action.VIEW -d "{URL}" -n com.liskovsoft.smarttubetv/.MainActivity"""
             )
         )
     }

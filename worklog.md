@@ -236,3 +236,24 @@ Stage Summary:
 - 10 files modified: MainActivity.kt, AdbManager.kt, SettingsManager.kt, AdbForegroundService.kt, strings.xml, build.gradle.kts, developer-context.md, build.yml, + mode changes
 - Version: v2.4.0 / code 34
 - Push pending: needs GitHub auth (SSH key or PAT)
+---
+Task ID: v2.7.0
+Agent: Main Agent (Super Z)
+Task: v2.7.0 — Fix tab switch re-connection, TV name disappearing, startup speed, push build
+
+Work Log:
+- Investigated full codebase: MainActivity.kt, SettingsManager.kt, ShareReceiverActivity.kt, PresetPickerActivity.kt, AdbPresetTileService.kt, developer-context.md
+- Confirmed auto commands ARE implemented: app popup has preset name + command template fields + Save button, presets appear in QS tile picker, ShareSheet auto-execute uses selected preset
+- Fixed tab switching causing re-connection: HomeTab stays composed across tab switches, only visibility toggles via isVisible parameter
+- Fixed premature discovery scan: added isSettingsLoaded flag to prevent scan from starting before DataStore values are loaded (tvHost was blank on first frame)
+- Added warm cache for instant startup: SettingsManager.warmCache() reads critical connection settings in App.onCreate() so UI renders on first frame
+- Updated About section with v2.7.0 changelog
+- Bumped version: 2.6.0 → 2.7.0 (code 36 → 37)
+- Pushed to GitHub, CI build #55 succeeded
+- APK downloaded to /home/z/my-project/download/app-debug-v2.7.0/app-debug.apk
+
+Stage Summary:
+- 6 files modified: MainActivity.kt, App.kt, SettingsManager.kt, build.gradle.kts, developer-context.md, PresetPickerActivity.kt
+- Key fixes: tab state preservation, no re-scan on switch, instant startup via warm cache, isSettingsLoaded guard
+- Auto commands confirmed working: popup preset creation → QS tile selection → ShareSheet auto-execute
+- Version: v2.7.0 / code 37
